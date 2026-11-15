@@ -489,18 +489,18 @@ describe('stored settings and the write queue', () => {
       else done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ watchEnabled: true, watchSensitivity: 'low', watchRules: [rule('r-a'), rule('r-b', 370)] });
+    plugin.start({ watchEnabled: true, watching: { watchSensitivity: 'low' }, watchRules: [rule('r-a'), rule('r-b', 370)] });
     try {
       const reply = recorder();
       const removing = routes['POST /watch/rules/remove']({ body: { id: 'r-b' } }, reply);
       await new Promise((resolve) => setImmediate(resolve));
       plugin.stop();
       // The restart's list no longer has r-b: the redone remove finds nothing.
-      plugin.start({ watchEnabled: true, watchSensitivity: 'high', watchRules: [rule('r-a')] });
+      plugin.start({ watchEnabled: true, watching: { watchSensitivity: 'high' }, watchRules: [rule('r-a')] });
       finish();
       await removing;
       const last = saves[saves.length - 1];
-      assert.equal(last.watchSensitivity, 'high', 'disk holds the restart\'s options, not the older copy');
+      assert.equal(last.watching.watchSensitivity, 'high', 'disk holds the restart\'s options, not the older copy');
       assert.deepEqual(ids(last.watchRules), ['r-a']);
     } finally {
       plugin.stop();
@@ -516,25 +516,25 @@ describe('stored settings and the write queue', () => {
       pending.push(done);
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ watchEnabled: true, watchSensitivity: 'low', watchRules: [rule('r-a'), rule('r-b', 370)] });
+    plugin.start({ watchEnabled: true, watching: { watchSensitivity: 'low' }, watchRules: [rule('r-a'), rule('r-b', 370)] });
     try {
       const removing = routes['POST /watch/rules/remove']({ body: { id: 'r-b' } }, recorder());
       await new Promise((resolve) => setImmediate(resolve));
       // Restart 1: r-b is gone, so the redone remove has nothing to do and
       // the restart's options are written back.
       plugin.stop();
-      plugin.start({ watchEnabled: true, watchSensitivity: 'normal', watchRules: [rule('r-a')] });
+      plugin.start({ watchEnabled: true, watching: { watchSensitivity: 'normal' }, watchRules: [rule('r-a')] });
       pending.shift()();
       await new Promise((resolve) => setImmediate(resolve));
       // Restart 2 while that re-save is in flight.
       plugin.stop();
-      plugin.start({ watchEnabled: true, watchSensitivity: 'high', watchRules: [rule('r-a')] });
+      plugin.start({ watchEnabled: true, watching: { watchSensitivity: 'high' }, watchRules: [rule('r-a')] });
       while (pending.length > 0) {
         pending.shift()();
         await new Promise((resolve) => setImmediate(resolve));
       }
       await removing;
-      assert.equal(saves[saves.length - 1].watchSensitivity, 'high');
+      assert.equal(saves[saves.length - 1].watching.watchSensitivity, 'high');
     } finally {
       plugin.stop();
     }
@@ -670,20 +670,20 @@ describe('stored settings and the write queue', () => {
       else done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ watchEnabled: true, watchSensitivity: 'low', watchRules: [rule('r-a')] });
+    plugin.start({ watchEnabled: true, watching: { watchSensitivity: 'low' }, watchRules: [rule('r-a')] });
     try {
       const reply = recorder();
       const adding = routes['POST /watch/rules/add']({ body: { rule: rule('r-b', 370) } }, reply);
       await new Promise((resolve) => setImmediate(resolve));
       assert.equal(typeof finish, 'function', 'the save is in flight');
       plugin.stop();
-      plugin.start({ watchEnabled: true, watchSensitivity: 'high', watchRules: [rule('r-a'), rule('r-c', 380)] });
+      plugin.start({ watchEnabled: true, watching: { watchSensitivity: 'high' }, watchRules: [rule('r-a'), rule('r-c', 380)] });
       finish();
       await adding;
       // The add is made again on the restart's options, and that is what is
       // stored and answered: no older copy on disk or in memory.
       const last = saves[saves.length - 1];
-      assert.equal(last.watchSensitivity, 'high');
+      assert.equal(last.watching.watchSensitivity, 'high');
       assert.deepEqual(ids(last.watchRules), ['r-a', 'r-c', 'r-b']);
       assert.deepEqual(ids(reply.body.rules), ['r-a', 'r-c', 'r-b']);
     } finally {
@@ -701,7 +701,7 @@ describe('stored settings and the write queue', () => {
       else done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ watchEnabled: true, watchSensitivity: 'low' });
+    plugin.start({ watchEnabled: true, watching: { watchSensitivity: 'low' } });
     const first = routes['POST /watch/rules/add']({ body: { rule: rule('r-a') } }, recorder());
     await new Promise((resolve) => setImmediate(resolve));
     const queuedReply = recorder();
@@ -711,7 +711,7 @@ describe('stored settings and the write queue', () => {
     await first;
     await queued;
     assert.equal(saves.length, 1, 'the queued save must not store just its own change over the stopped options');
-    assert.equal(saves[0].watchSensitivity, 'low');
+    assert.equal(saves[0].watching.watchSensitivity, 'low');
     assert.equal(queuedReply.statusCode, 503);
   });
 

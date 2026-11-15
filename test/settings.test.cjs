@@ -4,7 +4,15 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizeHistoryConfig } = require('../lib/history-service.cjs');
 const { normalizeWatchConfig } = require('../lib/watch/engine.cjs');
-const { DOCS_URL, SECTIONS, TOP_LEVEL_KEYS, readSettings, settingsSchema, settingsUiSchema } = require('../lib/settings.cjs');
+const {
+  DOCS_URL,
+  SECTIONS,
+  TOP_LEVEL_KEYS,
+  migrateSettings,
+  readSettings,
+  settingsSchema,
+  settingsUiSchema
+} = require('../lib/settings.cjs');
 
 /** Options as the admin page stores them once the form is saved with everything changed. */
 const NESTED = Object.freeze({
@@ -119,6 +127,131 @@ describe('readSettings', () => {
     const options = JSON.parse(JSON.stringify(NESTED));
     readSettings(options);
     assert.deepEqual(options, NESTED);
+  });
+});
+
+/**
+ * What the admin page's form does with stored options before they are
+ * saved: fill each field it shows and that has no value with its default
+ * (react-jsonschema-form's getDefaultFormState, for this schema's shape).
+ * Fields a switch hides are not filled; keys it does not know are kept.
+ */
+function fillFormDefaults(schema, options) {
+  const filled = { ...options };
+  for (const [key, field] of Object.entries(schema.properties)) {
+    if (field.type !== 'object') {
+      if (filled[key] === undefined) filled[key] = field.default;
+      continue;
+    }
+    const section = { ...(filled[key] || {}) };
+    for (const [name, sub] of Object.entries(field.properties)) {
+      if (section[name] === undefined) section[name] = sub.default;
+    }
+    for (const [switchKey, dependency] of Object.entries(field.dependencies || {})) {
+      const branch = dependency.oneOf.find((item) => item.properties[switchKey].enum.includes(section[switchKey]));
+      for (const [name, sub] of Object.entries(branch ? branch.properties : {})) {
+        if (name !== switchKey && section[name] === undefined) section[name] = sub.default;
+      }
+    }
+    filled[key] = section;
+  }
+  return filled;
+}
+
+describe('migrateSettings', () => {
+  const FLAT_KEYS = Object.values(SECTIONS).flat().filter((key) => key !== 'ruleAssistEnabled');
+
+  it('moves every setting stored flat into its section, with the same value, and drops the flat key', () => {
+    const { options, moved, kept } = migrateSettings(FLAT);
+    assert.deepEqual(options, NESTED);
+    assert.deepEqual([...moved].sort(), [...FLAT_KEYS].sort());
+    assert.deepEqual(kept, []);
+    for (const key of FLAT_KEYS) assert.equal(key in options, false, key);
+    assert.deepEqual(readSettings(options), readSettings(FLAT));
+    assert.deepEqual(normalizeWatchConfig(readSettings(options)), normalizeWatchConfig(FLAT));
+    assert.deepEqual(normalizeHistoryConfig(readSettings(options), {}), normalizeHistoryConfig(FLAT, {}));
+  });
+
+  it('turns a flat model into the AI help switch: on with the model, off without one', () => {
+    assert.deepEqual(migrateSettings({ ruleAssistModel: 'qwen3:0.6b' }).options, {
+      ruleAssist: { ruleAssistModel: 'qwen3:0.6b', ruleAssistEnabled: true }
+    });
+    // A blank model was "off": the switch says so, and the blank is dropped,
+    // so switching on later offers the default model.
+    for (const blank of ['', '  ']) {
+      assert.deepEqual(migrateSettings({ ruleAssistModel: blank, ollamaUrl: 'http://gpu.local:11434' }).options, {
+        ruleAssist: { ollamaUrl: 'http://gpu.local:11434', ruleAssistEnabled: false }
+      });
+    }
+    // A switch already in the section stays as it is.
+    assert.deepEqual(migrateSettings({ ruleAssistModel: 'qwen3:0.6b', ruleAssist: { ruleAssistEnabled: false } }).options, {
+      ruleAssist: { ruleAssistEnabled: false, ruleAssistModel: 'qwen3:0.6b' }
+    });
+    // No flat model, no switch added.
+    assert.deepEqual(migrateSettings({ ollamaUrl: 'http://gpu.local:11434' }).options, {
+      ruleAssist: { ollamaUrl: 'http://gpu.local:11434' }
+    });
+    // Read the same, every one of them.
+    for (const stored of [
+      { ruleAssistModel: 'qwen3:0.6b' },
+      { ruleAssistModel: '' },
+      { ruleAssistModel: 'qwen3:0.6b', ruleAssist: { ruleAssistEnabled: false } },
+      { ruleAssistModel: 'a', ruleAssist: { ruleAssistModel: 'b' } },
+      { ruleAssistModel: 'a', ruleAssist: { ruleAssistModel: '' } }
+    ]) {
+      assert.deepEqual(readSettings(migrateSettings(stored).options), readSettings(stored), JSON.stringify(stored));
+    }
+  });
+
+  it('keeps a value already in the section over the flat one', () => {
+    const { options, moved, kept } = migrateSettings({
+      watchSensitivity: 'high',
+      watchMaxPaths: 200,
+      watching: { watchSensitivity: 'low' }
+    });
+    assert.deepEqual(options, { watching: { watchSensitivity: 'low' }, advanced: { watchMaxPaths: 200 } });
+    assert.deepEqual(moved, ['watchMaxPaths']);
+    assert.deepEqual(kept, ['watchSensitivity']);
+  });
+
+  it('changes nothing, and gives the same object back, when nothing is flat', () => {
+    for (const stored of [NESTED, {}, { watchEnabled: true, watchRules: [] }, { watching: {}, somethingElse: 1 }]) {
+      const result = migrateSettings(stored);
+      assert.equal(result.options, stored);
+      assert.deepEqual(result.moved, []);
+    }
+    const once = migrateSettings(FLAT).options;
+    assert.equal(migrateSettings(once).options, once);
+  });
+
+  it('keeps the switch, the watch rules and keys it does not know where they are', () => {
+    const rules = [{ id: 'r' }];
+    const { options } = migrateSettings({ watchEnabled: false, watchRules: rules, futureKey: 1, watchSound: true });
+    assert.deepEqual(options, { watchEnabled: false, watchRules: rules, futureKey: 1, alerts: { watchSound: true } });
+  });
+
+  it('loses no value: a section stored as something else is left alone, with its flat keys', () => {
+    const { options, moved } = migrateSettings({ watching: 'not a section', watchSensitivity: 'high', watchMaxPaths: 200 });
+    assert.deepEqual(options, { watching: 'not a section', watchSensitivity: 'high', advanced: { watchMaxPaths: 200 } });
+    assert.deepEqual(moved, ['watchMaxPaths']);
+    assert.equal(readSettings(options).watchSensitivity, 'high');
+  });
+
+  it('does not change the options it is given', () => {
+    const stored = JSON.parse(JSON.stringify({ ...FLAT, watching: { watchSensitivity: 'low' } }));
+    const copy = JSON.parse(JSON.stringify(stored));
+    migrateSettings(stored);
+    assert.deepEqual(stored, copy);
+  });
+
+  it('leaves nothing for the form to fill over a stored value on its first save', () => {
+    const schema = settingsSchema();
+    const before = fillFormDefaults(schema, FLAT);
+    assert.notDeepEqual(readSettings(before), readSettings(FLAT));
+    for (const stored of [FLAT, { ...FLAT, ruleAssistModel: '' }]) {
+      const after = fillFormDefaults(schema, migrateSettings(stored).options);
+      assert.deepEqual(readSettings(after), readSettings(stored));
+    }
   });
 });
 

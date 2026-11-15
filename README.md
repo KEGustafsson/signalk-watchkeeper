@@ -68,8 +68,9 @@ signalk-parquet.
 The settings form starts with one switch, **Turn on Watchkeeper**, and groups
 the rest into sections. In the plugin's options a setting is stored in its
 section, for example `watching.watchSensitivity` (the keys are shown in
-parentheses below); settings stored flat, as before the sections, are still
-read. The AI help is used only when its switch is on and a model is named.
+parentheses below). Settings saved by an earlier version are moved into the
+sections on the first start. The AI help is used only when its switch is on
+and a model is named.
 
 | Setting | Default | |
 | --- | --- | --- |

@@ -452,3 +452,189 @@ describe('write access on a secured server', () => {
     }
   });
 });
+
+describe('settings saved flat by an earlier version', () => {
+  /** Flat options, as every version before the sections stored them. */
+  const flat = () => ({
+    watchEnabled: true,
+    watchSensitivity: 'high',
+    watchSound: true,
+    ollamaUrl: 'http://gpu.local:11434',
+    ruleAssistModel: 'qwen3:0.6b',
+    historyServerUrl: 'http://nas.local:3000',
+    watchMaxPaths: 200,
+    watchRules: []
+  });
+  const migrated = () => ({
+    watchEnabled: true,
+    watchRules: [],
+    alerts: { watchSound: true },
+    watching: { watchSensitivity: 'high' },
+    ruleAssist: { ollamaUrl: 'http://gpu.local:11434', ruleAssistModel: 'qwen3:0.6b', ruleAssistEnabled: true },
+    replay: { historyServerUrl: 'http://nas.local:3000' },
+    advanced: { watchMaxPaths: 200 }
+  });
+
+  /** Let the options write queue run what start() put on it. */
+  const settle = async () => {
+    for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  function hostWith(save) {
+    const host = createHost();
+    const saved = [];
+    host.savePluginOptions = (stored, done) => {
+      saved.push(JSON.parse(JSON.stringify(stored)));
+      (save || ((callback) => callback()))(done);
+    };
+    // The watch sees one path, so a rule has something to be about.
+    host.subscriptionmanager = {
+      subscribe(command, unsubscribes, onError, callback) {
+        callback({ updates: [{ values: [{ path: 'propulsion.main.temperature', value: 353 }] }] });
+      }
+    };
+    const asked = [];
+    const plugin = createPlugin(host, {
+      fetchImpl: async (url) => {
+        asked.push(String(url));
+        return new Response(JSON.stringify({ message: { content: '{}' } }), { status: 200 });
+      }
+    });
+    return { host, plugin, routes: routesOf(plugin), saved, asked };
+  }
+
+  /** Ask for a rule the built-in reader cannot read: the model is asked only with the AI help on. */
+  const compile = async (routes) => {
+    const response = recorder();
+    await routes['POST /watch/rules/compile']({ body: { text: 'shout if the engine is cooking' } }, response);
+    return response.body;
+  };
+
+  it('moves them into their sections on start and stores that once, so the form shows them', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    const { plugin, routes, saved, asked } = hostWith();
+    const options = flat();
+    plugin.start(options);
+    try {
+      await settle();
+      assert.equal(saved.length, 1);
+      assert.deepEqual(saved[0], migrated());
+      assert.deepEqual(options, flat());
+      const lines = logged.mock.calls.map((call) => call.arguments.join(' '));
+      assert.deepEqual(lines, [
+        'signalk-watchkeeper: moved settings saved by an earlier version into their sections: watchSound, watchSensitivity, ollamaUrl, ruleAssistModel, historyServerUrl, watchMaxPaths.'
+      ]);
+      // Running on the same settings: the model it named is still asked.
+      await compile(routes);
+      assert.deepEqual(asked, ['http://gpu.local:11434/api/chat']);
+      // A rule saved later keeps the sections and brings back no flat key.
+      const rule = { id: 'r-hot', text: 'coolant above 95', path: 'propulsion.main.temperature', op: 'above', value: 368, forSeconds: 0, severity: 'warn' };
+      const added = recorder();
+      await routes['POST /watch/rules/add']({ body: { rule } }, added);
+      assert.equal(added.statusCode, 200);
+      assert.deepEqual({ ...saved[1], watchRules: [] }, migrated());
+      assert.deepEqual(saved[1].watchRules.map((item) => item.id), ['r-hot']);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('turns an old blank model into the AI help switched off', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    const { plugin, routes, saved, asked } = hostWith();
+    plugin.start({ watchEnabled: true, ollamaUrl: 'http://gpu.local:11434', ruleAssistModel: '' });
+    try {
+      await settle();
+      assert.deepEqual(saved, [{ watchEnabled: true, ruleAssist: { ollamaUrl: 'http://gpu.local:11434', ruleAssistEnabled: false } }]);
+      assert.equal((await compile(routes)).assist, 'off');
+      assert.equal(asked.length, 0);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('keeps a value already in its section over the flat one', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    const { plugin, saved } = hostWith();
+    plugin.start({ watchSensitivity: 'high', watchMaxPaths: 200, watching: { watchSensitivity: 'low' } });
+    try {
+      await settle();
+      assert.deepEqual(saved, [{ watching: { watchSensitivity: 'low' }, advanced: { watchMaxPaths: 200 } }]);
+      assert.match(logged.mock.calls[0].arguments[0], /watchMaxPaths; for watchSensitivity the value already in its section was kept\.$/);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('stores nothing, and says nothing, when nothing is flat', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    const { plugin, saved } = hostWith();
+    plugin.start(migrated());
+    plugin.stop();
+    plugin.start({});
+    try {
+      await settle();
+      assert.equal(saved.length, 0);
+      assert.equal(logged.mock.calls.length, 0);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('runs on the moved settings when they cannot be stored, and tries again on the next start', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    let fail = true;
+    const { plugin, routes, saved, asked } = hostWith((done) => done(fail ? new Error('disk full') : undefined));
+    plugin.start(flat());
+    try {
+      await settle();
+      assert.equal(saved.length, 1);
+      const lines = logged.mock.calls.map((call) => call.arguments.join(' '));
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /could not be stored \(disk full\); this is tried again on the next start\./);
+      await compile(routes);
+      assert.deepEqual(asked, ['http://gpu.local:11434/api/chat']);
+
+      fail = false;
+      plugin.stop();
+      plugin.start(flat());
+      await settle();
+      assert.equal(saved.length, 2);
+      assert.deepEqual(saved[1], migrated());
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('stores nothing when the plugin stops before the move gets its turn', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    const { plugin, saved } = hostWith();
+    plugin.start(flat());
+    plugin.stop();
+    await settle();
+    assert.equal(saved.length, 0);
+  });
+
+  it('makes the move on the restart options when it restarts while the move is being stored', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    let restarted = false;
+    let plugin;
+    const made = hostWith((done) => {
+      if (!restarted) {
+        restarted = true;
+        plugin.stop();
+        plugin.start({ ...flat(), watchSensitivity: 'low' });
+      }
+      done();
+    });
+    plugin = made.plugin;
+    plugin.start(flat());
+    try {
+      await settle();
+      assert.equal(made.saved.length, 2);
+      assert.deepEqual(made.saved[1], { ...migrated(), watching: { watchSensitivity: 'low' } });
+    } finally {
+      plugin.stop();
+    }
+  });
+});

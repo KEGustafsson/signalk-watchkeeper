@@ -1,7 +1,7 @@
 'use strict';
 
 const { authHeadersFromRequest, normalizeHistoryConfig } = require('./lib/history-service.cjs');
-const { SETTING_LABELS, readSettings, settingsSchema, settingsUiSchema } = require('./lib/settings.cjs');
+const { SETTING_LABELS, migrateSettings, readSettings, settingsSchema, settingsUiSchema } = require('./lib/settings.cjs');
 const { createWatchService } = require('./lib/watch-service.cjs');
 const { normalizeWatchConfig } = require('./lib/watch/engine.cjs');
 const { MAX_RULES, hasValidId, normalizeRules } = require('./lib/watch/rules.cjs');
@@ -264,6 +264,68 @@ module.exports = function createPlugin(app, dependencies = {}) {
     // A failed save must not wedge the queue for the next one.
     optionsWriteQueue = run.catch(() => {});
     return run;
+  };
+
+  // One line for the server log. Signal K shows a plugin's standard output in
+  // its log; app.debug is shown only with debugging turned on for the plugin.
+  const logInfo = (message) => {
+    console.log(`signalk-watchkeeper: ${message}`);
+  };
+
+  /**
+   * Move settings an earlier version stored flat into their sections, and
+   * store the result once, through the options write queue - so the admin
+   * page's form shows the values the plugin runs on, instead of defaults that
+   * its first save would put over them.
+   *
+   * The queue does the guarding: nothing is written while the plugin is
+   * stopped, and a restart while the save is in flight makes the move again
+   * on the options it restarted with. With nothing flat left (the usual
+   * case, and every start after the first) nothing is queued or written.
+   * Should the save fail, the plugin runs on the moved settings in memory -
+   * the same settings, since readSettings() reads flat keys too - and the
+   * next start tries again.
+   */
+  const migrateStoredSettings = (options, generation) => {
+    if (migrateSettings(options).options === options) {
+      return Promise.resolve();
+    }
+    let last = { moved: [], kept: [], changed: false };
+    const describe = () =>
+      last.moved.join(', ') + (last.kept.length > 0 ? `; for ${last.kept.join(', ')} the value already in its section was kept` : '');
+    return updatePluginOptions((current) => {
+      const migration = migrateSettings(current);
+      last = { ...migration, changed: migration.options !== current };
+      return migration.options;
+    }).then(
+      () => {
+        if (last.changed) {
+          logInfo(`moved settings saved by an earlier version into their sections: ${describe()}.`);
+        }
+      },
+      (error) => {
+        // Stopped or restarted meanwhile: the options it runs on now are
+        // another start's, which makes its own move.
+        if (!running || generation !== lifecycleGeneration || errorCode(error) === 'disabled') {
+          return;
+        }
+        const migration = migrateSettings(pluginOptions);
+        if (migration.options === pluginOptions) {
+          return;
+        }
+        pluginOptions = migration.options;
+        last = { ...migration, changed: true };
+        // A server that cannot store plugin settings at all (an embedding
+        // host, not signalk-server) would be told the same on every start.
+        if (error && error.statusCode === 501) {
+          return;
+        }
+        logInfo(
+          `settings saved by an earlier version are used from their sections for now (${describe()}), ` +
+            `but could not be stored (${errorMessage(error, 'unknown error')}); this is tried again on the next start.`
+        );
+      }
+    );
   };
 
   /** GET /watch/status: what the watch has learned and what it has found. */
@@ -598,6 +660,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       pluginOptions = options;
       running = true;
       lifecycleGeneration += 1;
+      migrateStoredSettings(options, lifecycleGeneration);
       const settings = readSettings(options);
       watchService.start(settings);
       // A model is named but its server address was refused: say so where the

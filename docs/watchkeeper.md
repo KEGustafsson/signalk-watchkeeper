@@ -797,9 +797,31 @@ rest is grouped into sections, each a nested object in the plugin's options:
 rest of the plugin reads. Inside a section a key keeps the name it had when
 the settings were flat, and a key a section does not hold is read from the
 top level, so options stored before the sections still work as they did.
-Once the form is saved its sections are what count: the form shows the
-sections, not flat keys left over from before. The plugin's own writes (the
-watch rules) change `watchRules` only and keep every section as it is.
+The plugin's own writes (the watch rules) change `watchRules` only and keep
+every section as it is.
+
+**Settings saved by an earlier version are moved into the sections on the
+first start.** The admin page's form shows only what the sections hold, so
+flat settings would appear as the defaults, and the form's first save would
+put those over them. On start, the plugin therefore moves each flat setting
+into its section, with its value unchanged, removes the flat key, and stores
+the result once through the same write queue as the watch rules. A value
+already in the section (written by the form) wins over the flat one. The
+switch, the watch rules and keys the plugin does not know stay as they are.
+Before the AI help had a switch, a model named meant on: a flat
+`ruleAssistModel` becomes `ruleAssistEnabled: true` with that model, and a
+blank one `ruleAssistEnabled: false`, with the blank dropped so that
+switching on later offers the default model. The server log gets one line
+naming the moved settings:
+
+```
+signalk-watchkeeper: moved settings saved by an earlier version into their sections: watchSensitivity, ollamaUrl, ruleAssistModel.
+```
+
+Nothing is stored when nothing is flat, which is every start after the
+first. Nothing is stored while the plugin is stopped, either. If the server
+cannot store the result, the plugin runs on the moved settings, which are the
+same values, and the next start tries again.
 
 ### Alerts (`alerts`)
 
