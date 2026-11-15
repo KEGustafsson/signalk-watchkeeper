@@ -125,9 +125,9 @@ the move is listed under **Changed**.
 - Every History API request of a replay, the path listing included, waits
   `historyTimeoutMs` but at least 30 s; a setting of 0 no longer lets a
   listing that never answers keep the replay busy for good.
-- Node.js 22.12 or later is required (`engines`), the versions CI tests and
-  the oldest Node 22 the panel's build tooling (`@module-federation/vite`)
-  accepts; Node 20 reached its end of life in April 2026.
+- Node.js 22.12 or later is required (`engines`), the oldest Node 22 the
+  panel's build tooling (`@module-federation/vite`) accepts; Node 20 reached
+  its end of life in April 2026. CI tests on Node 24 and 26.
 - The plugin has its own icon, a lighthouse.
 - The History API client keeps only what replay needs, with its own settings
   (`historyServerUrl`, `historyApiKey`, `historyProvider`,

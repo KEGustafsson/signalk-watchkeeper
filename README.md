@@ -140,7 +140,7 @@ starts walking away from dead reckoning.
 [Signal K reusable plugin CI](https://github.com/SignalK/signalk-server/blob/master/.github/workflows/plugin-ci.yml)
 on every pushed branch and tag and on pull requests: package metadata, load
 and lifecycle, an App Store install and the tests, on Linux, macOS and
-Windows with Node 22 and 24, and in a live signalk-server. `ci` runs on pull
+Windows with Node 24 and 26, and in a live signalk-server. `ci` runs on pull
 requests and `main`: lint, types, tests, a production audit, a Trivy scan of
 the repository (failing on high or critical findings), and the suite again
 from the packed tarball with production dependencies only.
