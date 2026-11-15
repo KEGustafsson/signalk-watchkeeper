@@ -209,6 +209,20 @@ describe('CodeRabbit review of PR 1: operating states', () => {
     }
   });
 
+  it('does not let a sample with no source flip an engine state it does not watch', () => {
+    for (const overrides of [{ watchExcludePaths: ['propulsion.main.revolutions'] }, { watchMaxPaths: 10 }]) {
+      const engine = newEngine(overrides);
+      const rand = noise(53);
+      const fill = Array.from({ length: 10 }, (_, index) => `environment.sensor${index}.temperature`);
+      run(engine, T0, T0 + 20 * MINUTE, SECOND, () => [
+        ...fill.map((path) => [path, 290 + 0.1 * rand(), 'n2k.a']),
+        ['propulsion.main.revolutions', 20 + 0.1 * rand(), 'n2k.a'],
+        ['propulsion.main.revolutions', 0, undefined]
+      ]);
+      assert.equal(engine.status().regimeChanges.length, 0, JSON.stringify(overrides));
+    }
+  });
+
   it('still reads the engine state from one source once its table of first sources is full', () => {
     const fill = (engine, t) => {
       for (let index = 0; index < 5100; index += 1) engine.ingest(`environment.extra${index}.temperature`, 290, t, 'n2k.a');
