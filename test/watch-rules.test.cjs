@@ -368,7 +368,8 @@ describe('rule compilation: review follow-ups', () => {
         ['house battery voltage will be below 12 V', /does not say whether/],
         ['coolant above 95 while the engine revolutions should be above 600 rpm', /a "while" says when the watch applies/],
         ['house battery voltage is not not above 14 V', /negates the comparison twice/],
-        ['alert me if the house battery voltage must stay above 12 V', /follows "if" or "when"/]
+        ['alert me if the house battery voltage must stay above 12 V', /also says when to alert/],
+        ['alert me if the house battery voltage should be below 12 V', /also says when to alert/]
       ]) {
         const result = await service.compileRule({ text });
         assert.equal(result.ok, false, text);

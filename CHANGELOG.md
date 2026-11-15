@@ -52,9 +52,12 @@ the move is listed under **Changed**.
   keeps its place when a faster source appears. Other paths past the cap
   are not compared across sources, and take no room in the tables kept for
   skipped paths. That interval leaves out an outage, as a watched path's
-  does, and a new primary starts it afresh: an hour's silence before a
-  failover no longer makes a 1 s source wait minutes to take the primary
-  (and the operating state it gates) back.
+  does, and is each source's own: an hour's silence before a failover no
+  longer makes a 1 s source wait minutes to take the primary (and the
+  operating state it gates) back, and a new primary is judged by its own
+  interval (from its next sample if it has none yet), not by the old
+  primary's - a 20 s source that took over from one that slowed to 45 s
+  keeps the primary instead of failing back and forth.
 - Every request's error reply body is waited for at most 2 s by the fetch
   wrapper itself, also with no timeout set and when fetch ignores the
   abort, and such a body ends as a timeout rather than as an empty reply.
@@ -90,18 +93,26 @@ the move is listed under **Changed**.
   14 V" alerts above 14 V, like "should not exceed 14 V", instead of while the
   voltage is normal. The read-back says so, quoting the words as written
   (verb and case kept: "must stays above 12 V", not "must above 12 v").
-  After "tell me if", "alert when" and the like, "should" is the conditional
-  one: "alert me if the battery voltage should be below 12 V" alerts below
-  12 V, as "should ever be below" and "should drop below" there do; other
-  requirements there ("alert me if it must stay above 12 V") are refused.
-  "May", "can", "will" and the like as a modal without "not" (with a verb
-  after it, or before "exceed"), a requirement with a verb of crossing and
-  no "if" ("should drop below 12 V", which may be the alert itself) and a
-  requirement in a "while" are refused as ambiguous, with the phrasings to
-  use instead; such refusals, like a comparison negated twice, are not
-  passed to the model, which is told the parser's reading of "should" after
-  "if" too. A "can" that is no modal ("jerry can below 20 %", "the jerry can
-  is below 20 %", a path named "Jerry can") is part of the subject.
+  A modal about the comparison in a request that also says when to alert -
+  "if", "when", "whenever", "in case" or "once" anywhere before it, whatever
+  the punctuation, or "..., tell me" after it - is refused: "alert me if the
+  battery voltage should be below 12 V" may mean below 12 V or what is
+  normal, and trivial rewordings ("alert me, if", "please, tell me if",
+  "send me an alert if", "when ... should be below 12 V, tell me") no longer
+  flip the rule between the two, nor do "should be at least", "should be no
+  higher than" and "should not exceed" there give opposite rules. The
+  refusal offers the two plain phrasings ('Say "alert me if battery voltage
+  is below 12 V" or "battery voltage should stay above 12 V"'), quoting the
+  condition without the "warn me" after it. "May", "can", "will" and the
+  like as a modal without "not" (with a verb after it, or before "exceed"),
+  a requirement with a verb of crossing ("should drop below 12 V", which may
+  be the alert itself) and a requirement in a "while" are refused as
+  ambiguous, with the same phrasings - in a "while", the condition said
+  plainly ("while battery voltage is below 12 V"), as a "while" is no
+  alert; such refusals, like a comparison negated twice, are not passed to
+  the model, which is told that such requests say neither side. A "can"
+  that is no modal ("jerry can below 20 %", "the jerry can is below 20 %",
+  a path named "Jerry can") is part of the subject.
 - An operating state (engine running, charger mode) is read from its path's
   primary source only: a second source reporting another value no longer
   flips it on every sample and keeps the paths it gates relearning.
@@ -119,11 +130,15 @@ the move is listed under **Changed**.
   two hours at most, and is forgotten when the path settles regular again:
   a sensor unplugged for two days, back, slowed and then dead is reported
   after about an hour (under three if it came back slow at once), not after
-  three days. A gap that ended while the interval was already raised is the
-  sender's rhythm and is kept across a regular day: a sender that reports
-  every 10 s by day, every few minutes in the evening and not at all at night
-  is reported on its first night, not every night. A save from before keeps
-  no longest gap over two hours on a path that has settled regular.
+  three days. A gap of up to a day that ended while the interval was already
+  raised is the sender's rhythm and is kept across a regular day: a sender
+  that reports every 10 s by day, every few minutes in the evening and not
+  at all at night is reported on its first night, not every night. A longer
+  one is an outage too, however slow the path was: a slow sensor unplugged
+  for two days, back and then dead is reported after about an hour, not
+  after three days. A save from before keeps no longest gap on a path that
+  has settled regular (one of an hour and a half no longer sets the limit
+  for good), and no save keeps one of more than a day as the rhythm.
 - A silent data feed is paths that went quiet together, on connections with
   nothing still reporting: raised paths that die over a night while steady
   ones report are their own dropouts, not one "Signal K data stopped
@@ -136,12 +151,27 @@ the move is listed under **Changed**.
   is not overdue - a 55 s path whose last sample came 12 s after a gateway
   stopped, or a raised path seen in those seconds, no longer holds the feed
   back for minutes or an hour while every other path is reported on its
-  own. The group that went quiet most recently is the feed, not an older
-  and larger one (whose connection may even be live, which left no feed at
-  all): a group dead for an hour keeps its own dropouts and is
-  left out of the count, so the gateway that dies now is reported, with its
-  own sources; and a second connection going quiet joins a feed silence
-  already reported. A connection is everything before the source's last dot
+  own. While a slower path on the connection is due but has not shown
+  either way, the connection is undecided: neither the feed nor its silent
+  paths' dropouts are reported until that path proves live (its paths'
+  dropouts, at once) or misses its next sample (1.5 times its interval; the
+  feed, and no dropouts), and for five minutes at most. The feed alert
+  comes up to one slow interval later (95 s rather than 30 s with a 55 s
+  path that sent once after the rest stopped), and no longer opens and
+  clears into the paths' dropouts a minute later, which split one event
+  into two incidents; a finding that opens in the tick an incident resolved
+  joins it again. Only the newest moments that enough paths share to be a
+  feed are judged, so a vessel with thousands of paths that died one by one
+  no longer costs seconds every tick. The group that went quiet most
+  recently is the feed, not an older and larger one (whose connection may
+  even be live, which left no feed at all): a group dead for an hour keeps
+  its own dropouts and is left out of the count, so the gateway that dies
+  now is reported, with its own sources; and a second connection going
+  quiet joins a feed silence already reported. A connection is the label the server gives the source
+  (`update.source.label`: `can0` for `can0.115`, `venus` for every device of
+  the Venus plugin, so one Venus device dying while the others report is its
+  own dropouts, not a silent feed), kept with the path across a restart;
+  without one (a replay), everything before the source's last dot
   (`n2k.can0` and `n2k.can1` are two).
 - A rule whose value or guard is edited waits its full duration again, like
   one moved to another path; a "changes" rule whose guard or value is edited

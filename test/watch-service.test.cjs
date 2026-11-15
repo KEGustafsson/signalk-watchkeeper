@@ -1027,3 +1027,49 @@ describe('stored settings and the write queue', () => {
     }
   });
 });
+
+describe('review of 76b201d: the connection a delta came in on', () => {
+  it('passes the source label on, so one device of a plugin dying is no silent feed', () => {
+    const host = createHost();
+    const clock = { t: Date.parse('2026-06-01T08:00:00Z') };
+    const service = createWatchService(host, { now: () => clock.t });
+    service.start({ watchEnabled: true, watchLearningMinutes: 10 });
+    try {
+      // The Venus plugin: one label, a device after several dots.
+      const devices = [
+        ['battery.288', 'electrical.batteries.288', 6],
+        ['solarcharger.289', 'electrical.solar.289', 4],
+        ['vebus.276', 'electrical.inverters.276', 2]
+      ];
+      const send = (alive) => {
+        for (const [device, prefix, count] of devices) {
+          if (!alive(device)) continue;
+          const src = `com.victronenergy.${device}`;
+          host.deltaCallback({
+            context: 'vessels.self',
+            updates: [{
+              $source: `venus.${src}`,
+              source: { label: 'venus', type: 'plugin', src },
+              values: Array.from({ length: count }, (_, index) => ({ path: `${prefix}.p${index}`, value: 12 + (clock.t / SECOND % 5) * 0.01 }))
+            }]
+          });
+        }
+      };
+      const drive = (durationMs, alive) => {
+        const end = clock.t + durationMs;
+        while (clock.t < end) {
+          send(alive);
+          clock.t += SECOND;
+          if (clock.t % (5 * SECOND) === 0) service.tick();
+        }
+      };
+      drive(30 * MINUTE, () => true);
+      drive(3 * MINUTE, (device) => device !== 'battery.288');
+      const active = service.status().activeFindings;
+      assert.deepEqual(active.filter((finding) => finding.detector === 'feed'), [], 'no silent feed');
+      assert.equal(active.filter((finding) => finding.detector === 'dropout').length, 6);
+    } finally {
+      service.stop();
+    }
+  });
+});
