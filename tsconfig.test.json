@@ -16,6 +16,9 @@
     "src/watchText.ts",
     "src/watchText.test.ts",
     "src/clipboard.ts",
-    "src/clipboard.test.ts"
+    "src/clipboard.test.ts",
+    "src/types.ts",
+    "src/loginNotice.ts",
+    "src/loginNotice.test.ts"
   ]
 }

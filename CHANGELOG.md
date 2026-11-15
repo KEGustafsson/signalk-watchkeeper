@@ -44,6 +44,11 @@ the move is listed under **Changed**.
 
 ### Fixed (from CodeRabbit's review of the import)
 
+- **An admin is no longer told the login is read-only.** The panel took the
+  admin UI's `readOnlyAccess` for the login's level, but it is the server's
+  "Allow Readonly Access" setting (reads without a login). The panel and the
+  plugin's write check now read the login's own level, `userLevel`.
+
 - An operating state on a path the watch does not baseline (excluded, or
   past the cap on watched paths) is read from the source seen first too: a
   second source's first sample no longer takes over as its primary. That
