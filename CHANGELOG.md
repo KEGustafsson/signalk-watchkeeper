@@ -83,7 +83,11 @@ the move is listed under **Changed**.
   their opposite (`atMost`, `atLeast`), in a rule and in its guard; "not
   above" was stored as `above`. A limit said with "should not", "must not",
   "may not" and the other modal forms keeps its comparison, like "never" and
-  "shouldn't" ("should not exceed 14 V" is `above` 14, not `atMost`); "no
+  "shouldn't" ("should not exceed 14 V" is `above` 14, not `atMost`), also
+  with the modal before the "not" ("should be not above 14 V", "must be not
+  below 12 V" and "needs to stay not above 14 V" are read as "should not be
+  above 14 V": `above` 14, with "should be" no longer left in the subject;
+  it was `atMost` 14, an alert while the voltage was normal); "no
   higher than" is `atMost` and "no lower than" `atLeast` (they were `above`
   and `below`), as are "no hotter, warmer or faster than" (`atMost`) and "no
   colder, cooler or slower than" (`atLeast`); and a comparison negated twice
@@ -135,8 +139,13 @@ the move is listed under **Changed**.
   flips it on every sample and keeps the paths it gates relearning.
 - A sensor whose gaps grew before it went silent for good is still reported
   (after an hour's silence, or 1.5 times its longest gap): unconfirmed long
-  gaps no longer end its watch. Its regular interval is updated by regular
-  gaps only, so random gaps of 2 to 40 minutes no longer raise it until a
+  gaps no longer end its watch, nor does a confirmed slower rate: a path
+  that reported every 10 s and then settled at every three hours (eight
+  gaps of about one size) is still watched at that rate, for ten of its
+  intervals but a day at most, or 1.5 times its longest gap, and is
+  reported a day after it stops (it was not watched at all). Its regular
+  interval is updated by regular gaps only, so random gaps of 2 to 40
+  minutes no longer raise it until a
   dead sensor goes unreported. Such a path no longer counts toward the data
   feed's steady paths while it reports, so a gateway that goes down with
   regular and raised paths behind it is reported as one silent feed at once,
@@ -174,8 +183,13 @@ the move is listed under **Changed**.
   dropouts, at once) or misses its next sample (1.5 times its interval; the
   feed, and no dropouts), and for two minutes after that connection's paths
   went quiet at most - a path elsewhere that dies later does not start the
-  wait again. A raised or cycling path that is past its own due time (1.5
-  times its gap) is not waited for: a gateway that dies with one on it is
+  wait again. A connection is live by what it sent after its own paths went
+  quiet: a 55 s path on `can0` that reports twice after `can0`'s paths
+  stopped, but not yet twice after `can1`'s stopped a minute later, no
+  longer leaves a "16 of 17" silent feed until its next sample; `can0`'s
+  paths are dropouts, and `can1` is a silent feed of its own. A raised or
+  cycling path that is past its own due time (1.5 times its gap) is not
+  waited for: a gateway that dies with one on it is
   reported in 30 s, not 5 minutes. The feed alert comes up to one slow
   interval, at most two minutes, later (95 s rather than 30 s with a 55 s
   path that sent once after the rest stopped), and no longer opens and

@@ -1591,3 +1591,53 @@ describe('review of 5294dcc: how to be told, names with a condition word, and mo
     assert.deepEqual([plain.path, plain.op, plain.when && plain.when.path], ['propulsion.main.temperature', 'above', 'propulsion.main.state']);
   });
 });
+
+describe("CodeRabbit's review of 19085f1: a requirement before \"not\"", () => {
+  const read = (text, vessel = VESSEL) => parseRule(text, vessel);
+
+  it('reads "should be not above" as "should not be above", the limit, with the modal words out of the subject', () => {
+    const house = [{ path: 'electrical.batteries.house.voltage', role: 'watching' }];
+    for (const vessel of [house, VESSEL]) {
+      for (const [text, op] of [
+        ['house battery voltage should be not above 14 V, alert me', 'above'],
+        ['house battery voltage should be not above 14 V', 'above'],
+        ['battery voltage must be not below 12 V', 'below'],
+        ['battery voltage needs to be not below 12 V', 'below'],
+        ['battery voltage has to stay not above 14 V', 'above'],
+        ['battery voltage must remain not below 12 V', 'below'],
+        // As "should not be more than 14 V": "not more than" is one comparison.
+        ['battery voltage should be not more than 14 V', 'above']
+      ]) {
+        const result = read(text, vessel);
+        assert.equal(result.ok, true, `${text}: ${result.reason}`);
+        assert.deepEqual([result.rule.path, result.rule.op, result.rule.value], ['electrical.batteries.house.voltage', op, op === 'above' ? 14 : 12], text);
+      }
+      // The same as with the "not" first.
+      const before = read('house battery voltage should not be above 14 V, alert me', vessel);
+      const after = read('house battery voltage should be not above 14 V, alert me', vessel);
+      assert.deepEqual({ ...after.rule, text: undefined }, { ...before.rule, text: undefined });
+      assert.equal(after.reading, before.reading);
+    }
+    // "Should be" is not left in the subject: a "while" offers the condition
+    // without it.
+    const guarded = read('coolant above 95 °C while battery voltage should be not below 12 V');
+    assert.equal(guarded.terminal, true);
+    assert.match(guarded.reason, /for example "while battery voltage is at least 12 V" or "while battery voltage is below 12 V"\.$/i);
+  });
+
+  it('still refuses it in a condition, and negated twice', () => {
+    for (const text of [
+      'alert me if the battery voltage should be not above 14 V',
+      'when the battery voltage should be not above 14 V, tell me',
+      'tell me if the battery voltage must be not below 12 V'
+    ]) {
+      const result = read(text);
+      assert.equal(result.ok, false, text);
+      assert.equal(result.terminal, true, text);
+      assert.match(result.reason, /which side alerts would be a guess/, text);
+    }
+    const twice = read('battery voltage should be not no more than 14 V');
+    assert.equal(twice.ok, false);
+    assert.match(twice.reason, /negates the comparison twice/);
+  });
+});

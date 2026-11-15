@@ -1552,8 +1552,9 @@ describe('review of 76b201d: outages while raised, feeds held for a slow path, c
    * Paths [{ path, source, connection, every, dieAt, phase, times }] sampled
    * every `every` ms (from `phase` after T0) until `dieAt`, or at `times`, a
    * tick every five seconds; what opened and closed after `from`, and when.
+   * `onTick(engine, sinceFrom)` is called at each tick from `from` on.
    */
-  function simulate(list, from, to) {
+  function simulate(list, from, to, onTick) {
     const engine = newEngine();
     const opened = [];
     const closed = [];
@@ -1573,6 +1574,7 @@ describe('review of 76b201d: outages while raised, feeds held for a slow path, c
       if (t >= from) {
         for (const key of now) if (!open.has(key)) opened.push([key, t - from]);
         for (const key of open) if (!now.has(key)) closed.push([key, t - from]);
+        if (onTick) onTick(engine, t - from);
       }
       open = now;
     }
@@ -1652,6 +1654,26 @@ describe('review of 76b201d: outages while raised, feeds held for a slow path, c
     const held = simulate([...fast, raisedEnding(D - 10 * SECOND, [120]), ...paths('other', 2, (index) => `gwB.${index}`, SECOND, D + MINUTE)], D, D + 10 * MINUTE);
     const feed = held.opened.find(([key]) => key === 'feed:feed');
     assert.ok(feed && feed[1] <= 2 * MINUTE + 5 * SECOND, `the silent feed after ${feed && feed[1] / SECOND} s`);
+  });
+
+  it("judges a connection live by what it sent after its own paths went quiet (CodeRabbit's review of 19085f1)", () => {
+    // Twelve can0 paths stop at D, four can1 paths a minute later; a can0
+    // path every 55 s goes on (D+50 s, D+105 s, ...). At D+105 s it is past
+    // can0's silence by more than its interval, though not past can1's:
+    // can0 lives, and its twelve are dropouts, not "16 of 17" silent.
+    const list = [
+      ...paths('a', 12, (index) => `can0.${100 + index}`, SECOND, D, 0, 'can0'),
+      ...paths('b', 4, (index) => `can1.${index}`, SECOND, D + MINUTE, 0, 'can1'),
+      ...paths('live', 1, 'can0.90', 55 * SECOND, Infinity, 45 * SECOND, 'can0')
+    ];
+    const messages = new Set();
+    const { opened } = simulate(list, D, D + 6 * MINUTE, (engine) => {
+      for (const item of engine.status().activeFindings) if (item.detector === 'feed') messages.add(item.message);
+    });
+    assert.deepEqual([...messages], ['4 of 5 regularly updating paths have gone quiet (sources: can1.0, can1.1, can1.2, can1.3)']);
+    const dropouts = opened.filter(([key]) => key.startsWith('dropout:'));
+    assert.deepEqual(dropouts.map(([key]) => key).sort(), Array.from({ length: 12 }, (_, index) => `dropout:electrical.a${index}.voltage`).sort());
+    assert.ok(dropouts.every(([, at]) => at <= 105 * SECOND), `can0's dropouts after ${dropouts.map(([, at]) => at / SECOND)} s`);
   });
 
   it('keeps one incident when a silent feed clears into its paths\' dropouts', () => {
@@ -1782,5 +1804,40 @@ describe("CodeRabbit's review of 76b201d: muted paths in a feed silence", () => 
     assert.deepEqual(engine.status().activeFindings.map((item) => item.message), [
       '14 of 16 regularly updating paths have gone quiet (sources: can0.1, can1.1)'
     ]);
+  });
+});
+
+describe("CodeRabbit's review of 19085f1: a regular path that settled at a much slower rate", () => {
+  it('is still watched at its new rate, and reported once it stops', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const times = [];
+    for (let at = T0 + 10 * SECOND; at <= T0 + 40 * MINUTE; at += 10 * SECOND) times.push(at);
+    // Every 10 s, then every three hours twelve times: a confirmed slower
+    // rate after the eighth.
+    for (let index = 0; index < 12; index += 1) times.push(times[times.length - 1] + 3 * HOUR);
+    const last = times[times.length - 1];
+    const opens = [];
+    let open = false;
+    let next = 0;
+    for (let t = T0; t <= last + 30 * HOUR; t += t < T0 + 40 * MINUTE ? 5 * SECOND : MINUTE) {
+      while (next < times.length && times[next] <= t) {
+        engine.ingest(path, 12.8 + 0.01 * (next % 7), times[next]);
+        next += 1;
+      }
+      engine.tick(t);
+      const now = detectors(engine).includes(`dropout:${path}`);
+      if (now && !open) opens.push(t);
+      open = now;
+    }
+    const state = engine.exportState(last).paths.find((item) => item.path === path);
+    assert.equal(state.intervalMean, 3 * HOUR, 'the slower rate is learned');
+    // Not reported at its gaps once the rate is confirmed...
+    const confirmedAt = times[times.length - 12 + 8];
+    assert.deepEqual(opens.filter((at) => at > confirmedAt && at <= last), []);
+    // ...and reported once it stops: past half again its gap, within a day.
+    const reported = opens.filter((at) => at > last);
+    assert.equal(reported.length, 1, `reported ${reported.map((at) => ((at - last) / HOUR).toFixed(2))} h after its last sample`);
+    assert.ok(reported[0] - last > 4.5 * HOUR && reported[0] - last <= 24 * HOUR + MINUTE, `reported ${((reported[0] - last) / HOUR).toFixed(2)} h after its last sample`);
   });
 });
