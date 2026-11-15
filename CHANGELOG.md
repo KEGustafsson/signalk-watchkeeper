@@ -259,14 +259,23 @@ the move is listed under **Changed**.
   `normal` and `high` as before. Options stored flat are still read
   (`lib/settings.cjs`), and saving a watch rule keeps every section as it is.
   Settings saved by an earlier version are moved into the sections on the
-  first start (`migrateSettings()`), so the form shows the stored values
+  first start (`migrateSettings()`), and shown in the form from the start
+  even while the plugin is off, so the form shows the stored values
   instead of defaults that its first save would have put over them. A value
   already in a section wins, the flat keys are removed, and a flat model
   becomes the AI help switched on with that model (a blank one, switched
   off). The result is stored once through the options write queue, and the
   server log gets one line naming the moved settings. Nothing is stored when
   nothing is flat or the plugin is stopped, and a failed save is tried again
-  on the next start.
+  on the next start. A plugin that is off is never started, so until then
+  `schema()` reads the stored options (`app.readPluginOptions()`) and gives
+  each field whose setting is still flat that value as its default (and
+  the AI help switch the value the move would give it): the form shows
+  it, and a save stores it in its section rather than the default over
+  it. A stored value the field does not take keeps the field's usual
+  default, with a note in its description. Loading the form writes
+  nothing, and a server without `readPluginOptions()`, or one that fails,
+  gets the usual form.
 - **Help from a model is an explicit opt-in.** Reading a rule the parser
   cannot uses the plugin's own Ollama settings, under **Rules in your own
   words**: a switch, off by default, and only while it is on the Ollama

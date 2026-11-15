@@ -801,7 +801,8 @@ The plugin's own writes (the watch rules) change `watchRules` only and keep
 every section as it is.
 
 **Settings saved by an earlier version are moved into the sections on the
-first start.** The admin page's form shows only what the sections hold, so
+first start, and shown in the form from the start even while the plugin is
+off.** The admin page's form shows only what the sections hold, so
 flat settings would appear as the defaults, and the form's first save would
 put those over them. On start, the plugin therefore moves each flat setting
 into its section, with its value unchanged, removes the flat key, and stores
@@ -823,6 +824,18 @@ Nothing is stored when nothing is flat, which is every start after the
 first. Nothing is stored while the plugin is stopped, either. If the server
 cannot store the result, the plugin runs on the moved settings, which are the
 same values, and the next start tries again.
+
+A plugin that is off is not started, so its flat settings stay where they
+are until it is turned on. The form shows them all the same: each time the
+admin page loads the plugin's settings, the plugin reads the stored options
+(`app.readPluginOptions()`) and makes each flat setting the default of its
+field, so the form shows the stored value and a save stores it in its
+section. The AI help switch is shown as the move would set it from the
+model. A stored value the field does not take (outside its range or
+choices, or of the wrong type) is not shown: the field keeps its usual
+default, its description says so, and a save stores that default. Loading
+the form writes nothing, and a server that cannot give the stored options
+gets the usual form.
 
 ### Alerts (`alerts`)
 

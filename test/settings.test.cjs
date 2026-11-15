@@ -7,6 +7,7 @@ const { normalizeWatchConfig } = require('../lib/watch/engine.cjs');
 const {
   DOCS_URL,
   SECTIONS,
+  STORED_VALUE_NOT_SHOWN,
   TOP_LEVEL_KEYS,
   migrateSettings,
   readSettings,
@@ -271,6 +272,79 @@ describe('migrateSettings', () => {
       const after = fillFormDefaults(schema, migrateSettings(stored).options);
       assert.deepEqual(readSettings(after), readSettings(stored));
     }
+  });
+});
+
+describe('the settings form for the stored options', () => {
+  /** Every field of the form by key. */
+  const allFields = (schema) => Object.assign({}, ...Object.keys(SECTIONS).map((section) => fieldsOf(schema.properties[section])));
+
+  it('shows the settings stored flat as their fields\' defaults, so a save stores them', () => {
+    const schema = settingsSchema(FLAT);
+    const fields = allFields(schema);
+    for (const key of Object.values(SECTIONS).flat()) {
+      // The switch is not stored flat: the move sets it on from the model.
+      const want = key === 'ruleAssistEnabled' ? true : FLAT[key];
+      assert.deepEqual(fields[key].default, want, key);
+    }
+    // The admin page fills the stored options with those defaults and saves
+    // them: every stored value is kept, in its section.
+    const saved = fillFormDefaults(schema, FLAT);
+    for (const [section, keys] of Object.entries(SECTIONS)) {
+      for (const key of keys) {
+        if (key !== 'ruleAssistEnabled') assert.deepEqual(saved[section][key], FLAT[key], `${section}.${key}`);
+      }
+    }
+    assert.equal(saved.ruleAssist.ruleAssistEnabled, true);
+    assert.deepEqual(readSettings(saved), readSettings(FLAT));
+    assert.deepEqual(normalizeWatchConfig(readSettings(saved)), normalizeWatchConfig(readSettings(FLAT)));
+    assert.deepEqual(normalizeHistoryConfig(readSettings(saved), {}), normalizeHistoryConfig(readSettings(FLAT), {}));
+    // A list is the stored one, copied: the form is plain JSON of its own.
+    assert.notEqual(fields.watchExcludePaths.default, FLAT.watchExcludePaths);
+    assert.deepEqual(JSON.parse(JSON.stringify(schema)), schema);
+  });
+
+  it('shows the AI help as it runs, whatever the model stored', () => {
+    // A blank model was off: the switch stays off, and switching on offers the default model.
+    const blank = fillFormDefaults(settingsSchema({ ruleAssistModel: '' }), { ruleAssistModel: '' });
+    assert.equal(blank.ruleAssist.ruleAssistEnabled, false);
+    // A model already in its section, with no switch stored, is on.
+    const inSection = { ruleAssist: { ruleAssistModel: 'gemma3:1b' } };
+    const saved = fillFormDefaults(settingsSchema(inSection), inSection);
+    assert.deepEqual(saved.ruleAssist, { ruleAssistModel: 'gemma3:1b', ruleAssistEnabled: true, ollamaUrl: 'http://localhost:11434' });
+    assert.equal(readSettings(saved).ruleAssistModel, readSettings(inSection).ruleAssistModel);
+  });
+
+  it('changes only the fields whose value is stored flat, and not one a section already holds', () => {
+    const schema = settingsSchema({ watchSensitivity: 'low', watchMaxPaths: 200, replay: { historyTimeoutMs: 1000 }, historyTimeoutMs: 2000 });
+    const expected = settingsSchema();
+    expected.properties.watching.properties.watchSensitivity.default = 'low';
+    expected.properties.advanced.properties.watchMaxPaths.default = 200;
+    assert.deepEqual(schema, expected);
+  });
+
+  it('is the usual form when nothing is stored flat', () => {
+    for (const stored of [undefined, null, {}, NESTED, 'not options', [], { watchEnabled: true, watchRules: [] }, { watching: 'not a section', watchSensitivity: 'low' }]) {
+      assert.deepEqual(settingsSchema(stored), settingsSchema(), JSON.stringify(stored));
+    }
+  });
+
+  it('keeps the default, and says so, for a stored value the field does not take', () => {
+    const stored = { watchSensitivity: 'extreme', watchLearningMinutes: 0, watchMaxPaths: 'many', watchExcludePaths: ['a', 3], historyTimeoutMs: 1.5, watchSound: true };
+    const fields = allFields(settingsSchema(stored));
+    const usual = allFields(settingsSchema());
+    for (const key of ['watchSensitivity', 'watchLearningMinutes', 'watchMaxPaths', 'watchExcludePaths', 'historyTimeoutMs']) {
+      assert.deepEqual(fields[key].default, usual[key].default, key);
+      assert.equal(fields[key].description, `${usual[key].description} ${STORED_VALUE_NOT_SHOWN}`, key);
+    }
+    assert.equal(fields.watchSound.default, true);
+    assert.equal(fields.watchSound.description, usual.watchSound.description);
+  });
+
+  it('does not change the options it is given', () => {
+    const stored = JSON.parse(JSON.stringify(FLAT));
+    settingsSchema(stored);
+    assert.deepEqual(stored, FLAT);
   });
 });
 

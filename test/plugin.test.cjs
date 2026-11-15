@@ -638,3 +638,84 @@ describe('settings saved flat by an earlier version', () => {
     }
   });
 });
+
+describe('the settings form for settings saved flat by an earlier version', () => {
+  const { settingsSchema } = require('../lib/settings.cjs');
+  const flat = () => ({
+    watchEnabled: false,
+    watchSensitivity: 'high',
+    watchSound: true,
+    watchExcludePaths: ['environment.inside'],
+    ollamaUrl: 'http://gpu.local:11434',
+    ruleAssistModel: 'gemma3:1b',
+    historyServerUrl: 'http://nas.local:3000',
+    watchMaxPaths: 200,
+    watchRules: []
+  });
+
+  /** A plugin that is never started, as Signal K keeps one that is off. */
+  function offPlugin(readPluginOptions) {
+    const host = createHost();
+    const saves = [];
+    host.savePluginOptions = (stored, done) => {
+      saves.push(stored);
+      done();
+    };
+    if (readPluginOptions !== undefined) host.readPluginOptions = readPluginOptions;
+    return { plugin: createPlugin(host, {}), saves };
+  }
+
+  it('shows the stored values while the plugin is off, before any start has moved them', () => {
+    const { plugin, saves } = offPlugin(() => ({ enabled: false, configuration: flat() }));
+    const { properties } = plugin.schema();
+    assert.equal(properties.watching.properties.watchSensitivity.default, 'high');
+    assert.deepEqual(properties.watching.properties.watchExcludePaths.default, ['environment.inside']);
+    assert.equal(properties.alerts.properties.watchSound.default, true);
+    // The model named before the switch existed: shown with the switch on.
+    assert.equal(properties.ruleAssist.properties.ruleAssistEnabled.default, true);
+    const [, on] = properties.ruleAssist.dependencies.ruleAssistEnabled.oneOf;
+    assert.equal(on.properties.ollamaUrl.default, 'http://gpu.local:11434');
+    assert.equal(on.properties.ruleAssistModel.default, 'gemma3:1b');
+    assert.equal(properties.replay.properties.historyServerUrl.default, 'http://nas.local:3000');
+    assert.equal(properties.advanced.properties.watchMaxPaths.default, 200);
+    // Everything not stored flat keeps its usual default.
+    const usual = settingsSchema().properties;
+    assert.equal(properties.watching.properties.watchLearningMinutes.default, usual.watching.properties.watchLearningMinutes.default);
+    assert.equal(properties.replay.properties.historyTimeoutMs.default, usual.replay.properties.historyTimeoutMs.default);
+    // Asking for the form writes nothing.
+    assert.deepEqual(saves, []);
+    assert.deepEqual(JSON.parse(JSON.stringify(plugin.schema())), plugin.schema());
+  });
+
+  it('reads the stored options each time the form is asked for', () => {
+    let configuration = flat();
+    const { plugin } = offPlugin(() => ({ enabled: false, configuration }));
+    assert.equal(plugin.schema().properties.watching.properties.watchSensitivity.default, 'high');
+    // Saved from the form: in the sections now, so the form is the usual one.
+    configuration = { watching: { watchSensitivity: 'high' } };
+    assert.deepEqual(plugin.schema(), settingsSchema());
+  });
+
+  it('is the usual form when the stored options are in sections, empty or cannot be read', () => {
+    const usual = settingsSchema();
+    const hosts = {
+      'in sections': () => ({ enabled: true, configuration: { watching: { watchSensitivity: 'high' }, advanced: { watchMaxPaths: 200 } } }),
+      'nothing stored': () => ({}),
+      'empty configuration': () => ({ enabled: false, configuration: {} }),
+      'returns nothing': () => undefined,
+      'returns null': () => null,
+      'returns a string': () => 'options',
+      'configuration not an object': () => ({ configuration: 'flat' }),
+      throws: () => {
+        throw new Error('EACCES');
+      },
+      'not a function': 'readPluginOptions'
+    };
+    for (const [name, readPluginOptions] of Object.entries(hosts)) {
+      const { plugin } = offPlugin(readPluginOptions);
+      assert.deepEqual(plugin.schema(), usual, name);
+    }
+    // A host without readPluginOptions at all.
+    assert.deepEqual(offPlugin().plugin.schema(), usual);
+  });
+});

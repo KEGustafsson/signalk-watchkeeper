@@ -60,9 +60,25 @@ module.exports = function createPlugin(app, dependencies = {}) {
 
   const getConfig = () => normalizeHistoryConfig(readSettings(pluginOptions));
 
-  // The settings form; lib/settings.cjs holds it, with readSettings(), which
-  // turns what the form stores into the flat settings the code below reads.
-  const schema = () => settingsSchema();
+  /**
+   * The settings form; lib/settings.cjs holds it, with readSettings(), which
+   * turns what the form stores into the flat settings the code below reads.
+   *
+   * The admin page asks for the form on every load of the plugin's settings,
+   * also while the plugin is off, so the form is made from the options the
+   * server has stored: settings an earlier version stored flat are shown
+   * from the start, not only once start() has moved them. Only read here,
+   * never written. A server that cannot give the stored options, or fails
+   * to, gets the form as always.
+   */
+  const schema = () => {
+    try {
+      const stored = typeof app.readPluginOptions === 'function' ? app.readPluginOptions() : undefined;
+      return settingsSchema(stored && typeof stored === 'object' ? stored.configuration : undefined);
+    } catch {
+      return settingsSchema();
+    }
+  };
 
   /**
    * HTTP status for an error code.
