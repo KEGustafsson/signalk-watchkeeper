@@ -243,10 +243,25 @@ the move is listed under **Changed**.
   `/plugins/signalk-watchkeeper/watch/...`.
 - Notifications are published under `notifications.watchkeeper.*` (they were
   under `notifications.aiBridge.watch.*`).
-- Reading a rule the parser cannot uses the plugin's own Ollama settings:
-  `ollamaUrl` and `ruleAssistModel` (blank is the parser only). The model is
-  let go two minutes after use. `watchRuleAssist` and `watchHelperModel` are
-  gone.
+- **The settings are grouped into sections**, written for a boat owner
+  rather than a developer: one switch, **Turn on Watchkeeper**, then
+  **Alerts**, **What to watch**, **Rules in your own words – optional AI
+  help**, **Replay from history – optional** and **Advanced**, each a nested
+  object in the plugin's options (`alerts`, `watching`, `ruleAssist`,
+  `replay`, `advanced`) with short plain descriptions; the technical detail
+  moved to the settings section of `docs/watchkeeper.md`. Sensitivity reads
+  Calm – fewer alerts / Normal / Sharp – more alerts, stored as `low`,
+  `normal` and `high` as before. Options stored flat are still read
+  (`lib/settings.cjs`), and saving a watch rule keeps every section as it is.
+- **Help from a model is an explicit opt-in.** Reading a rule the parser
+  cannot uses the plugin's own Ollama settings, under **Rules in your own
+  words**: a switch, off by default, and only while it is on the Ollama
+  server address (`ollamaUrl`) and the model (`ruleAssistModel`, `qwen3:0.6b`
+  when switched on). The form says that rules work without it and that
+  Ollama is installed separately. The model is let go two minutes after use.
+  `watchRuleAssist` and `watchHelperModel` are gone. Messages name the
+  settings by their place in the form ("Rules in your own words → Ollama
+  server address", "History server address").
 - "Ask AI about this" and the other hand-offs to a model are now copy
   buttons: **Copy as text** on an incident and on the "most unusual" list,
   and **Copy for the log** on the report. They copy plain text, also over

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import { parse as parseYaml } from 'yaml';
 
 const requiredFiles = [
@@ -11,6 +12,7 @@ const requiredFiles = [
   'src/index.ts',
   'lib/history-service.cjs',
   'lib/http-utils.cjs',
+  'lib/settings.cjs',
   'lib/signalk-units.cjs',
   'lib/watch-service.cjs',
   'lib/watch/engine.cjs',
@@ -43,6 +45,16 @@ for (const route of ['rules/compile', 'rules/save', 'rules/add', 'rules/remove',
   assert.match(pluginSource, new RegExp(`router\\.post\\('/watch/${route.replace('/', '\\/')}'`), `POST /watch/${route} is registered`);
 }
 assert.match(pluginSource, /id: 'signalk-watchkeeper'/);
+
+// The admin page renders schema() as stored JSON: the switch first, then the
+// sections, and nothing JSON would drop.
+{
+  const plugin = createRequire(import.meta.url)('../index.cjs')({});
+  const schema = plugin.schema();
+  assert.deepEqual(JSON.parse(JSON.stringify(schema)), schema, 'schema() must be plain JSON');
+  assert.deepEqual(JSON.parse(JSON.stringify(plugin.uiSchema())), plugin.uiSchema(), 'uiSchema() must be plain JSON');
+  assert.deepEqual(Object.keys(schema.properties), ['watchEnabled', 'alerts', 'watching', 'ruleAssist', 'replay', 'advanced']);
+}
 
 const appPanelSource = fs.readFileSync('src/AppPanel.tsx', 'utf8');
 assert.match(appPanelSource, /\/plugins\/signalk-watchkeeper/);

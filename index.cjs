@@ -1,10 +1,7 @@
 'use strict';
 
-const {
-  DEFAULT_HISTORY_TIMEOUT_MS,
-  authHeadersFromRequest,
-  normalizeHistoryConfig
-} = require('./lib/history-service.cjs');
+const { authHeadersFromRequest, normalizeHistoryConfig } = require('./lib/history-service.cjs');
+const { SETTING_LABELS, readSettings, settingsSchema, settingsUiSchema } = require('./lib/settings.cjs');
 const { createWatchService } = require('./lib/watch-service.cjs');
 const { normalizeWatchConfig } = require('./lib/watch/engine.cjs');
 const { MAX_RULES, hasValidId, normalizeRules } = require('./lib/watch/rules.cjs');
@@ -47,6 +44,9 @@ async function readJsonBody(req) {
 }
 
 module.exports = function createPlugin(app, dependencies = {}) {
+  // The options as Signal K stored them - sectioned, or flat from before the
+  // sections - and as every save writes them back: a save changes its own key
+  // (watchRules) and keeps the rest as it is. Read them through readSettings().
   let pluginOptions = {};
   let routesRegistered = false;
   // Express has no public API for unmounting a subrouter, and signalk-server
@@ -58,135 +58,11 @@ module.exports = function createPlugin(app, dependencies = {}) {
   let lifecycleGeneration = 0;
   const watchService = createWatchService(app, { ...dependencies, pluginId: 'signalk-watchkeeper' });
 
-  const getConfig = () => normalizeHistoryConfig(pluginOptions);
+  const getConfig = () => normalizeHistoryConfig(readSettings(pluginOptions));
 
-  const schema = () => ({
-    type: 'object',
-    properties: {
-      watchEnabled: {
-        type: 'boolean',
-        title: 'Watch all Signal K paths',
-        description:
-          'Learn how every self-vessel path normally behaves and raise a Signal K notification when one departs from ' +
-          'it: a sustained jump or ramp, a sensor that stops updating or freezes, a state never seen before, a pump ' +
-          'cycling more than usual, a tank or battery trending toward its limit, or a GNSS fix that dead reckoning and ' +
-          'the other receivers do not corroborate. Uses no language model - it runs on the CPU in microseconds per ' +
-          'update. Experimental: not a substitute for real alarms.',
-        default: false
-      },
-      watchSensitivity: {
-        type: 'string',
-        title: 'Watch sensitivity',
-        description:
-          'How far from normal a value must move before it is reported. Start at normal; use the panel\'s replay to see what a setting would have raised over the last day before changing it.',
-        enum: ['low', 'normal', 'high'],
-        default: 'normal'
-      },
-      watchLearningMinutes: {
-        type: 'integer',
-        title: 'Watch learning period (minutes)',
-        description:
-          'How long a newly seen path is observed before it can raise anything. The learned baseline is saved, so this is paid once, not after every restart.',
-        default: 30,
-        minimum: 1,
-        maximum: 1440
-      },
-      watchNotifications: {
-        type: 'boolean',
-        title: 'Publish watch findings as Signal K notifications',
-        description:
-          'Under notifications.watchkeeper.*, at warn or alert - never alarm or emergency, which belong to real alarm sources.',
-        default: true
-      },
-      watchSound: {
-        type: 'boolean',
-        title: 'Ask for sound on watch alerts',
-        description: 'Adds "sound" to the notification method for alert-level findings. Warnings are always visual only.',
-        default: false
-      },
-      watchDefaultExclusions: {
-        type: 'boolean',
-        title: 'Skip paths that change with the helm, wind and seabed',
-        description:
-          'Heading, course, speed, attitude, wind, depth, steering and similar paths change quickly by their nature, so the watch skips them by default. Position and fix quality are still read, by the GNSS integrity check.',
-        default: true
-      },
-      watchExcludePaths: {
-        type: 'array',
-        title: 'Also skip these paths',
-        description:
-          'Signal K paths or patterns: a path covers everything beneath it, * matches within one segment, ** across segments (for example environment.inside, propulsion.*.exhaustTemperature, **.signalStrength).',
-        items: { type: 'string' },
-        default: []
-      },
-      watchCounterPaths: {
-        type: 'array',
-        title: 'Counters under other names',
-        description:
-          'Paths that only count up - engine hours, energy, pulses - which the watch does not judge as levels or stuck sensors. ' +
-          'Standard names (runTime, fuel.used, lifetimeDischarge, energy..., log, ...Today and the like) are recognised already; ' +
-          'list a plugin\'s own counters here. A pattern (as above) covers the paths beneath it, except measurements such as ' +
-          'a voltage or a level; list a path exactly to make it a counter regardless.',
-        items: { type: 'string' },
-        default: []
-      },
-      ollamaUrl: {
-        type: 'string',
-        title: 'Ollama server for reading rules',
-        description:
-          'Watch rules written in plain words ("tell me if the coolant goes above 95 for 2 minutes") are read by a parser first, ' +
-          'with no model. A request the parser cannot read can be passed to a small model on this Ollama server, which picks ' +
-          'from a short list of real paths with its answer held to a fixed format; every result is read back for you to confirm.',
-        default: 'http://localhost:11434'
-      },
-      ruleAssistModel: {
-        type: 'string',
-        title: 'Model for reading rules',
-        description:
-          'A small Ollama model such as qwen3:0.6b or gemma3:1b. Leave blank to use the parser only. The model is unloaded two minutes after use so it does not hold GPU memory.',
-        default: ''
-      },
-      watchMaxPaths: {
-        type: 'integer',
-        title: 'Most paths to watch',
-        description: 'A bound on memory and CPU. Paths beyond it are counted in the panel but not watched.',
-        default: 1500,
-        minimum: 10,
-        maximum: 10000
-      },
-      historyServerUrl: {
-        type: 'string',
-        title: 'Signal K server URL for replay (optional)',
-        description:
-          'Where to reach the History API that the replay reads. Leave blank to call this server on localhost. Set it for history served by another Signal K instance (with its own History API key). With TLS on, leave it blank and start Signal K with NODE_EXTRA_CA_CERTS set to ssl-cert.pem in its configuration directory, so its own certificate verifies on localhost.',
-        default: ''
-      },
-      historyApiKey: {
-        type: 'string',
-        title: 'History API key (servers other than this one)',
-        description:
-          'Bearer token for a history server that is not this Signal K server: another host, or another service on this machine at a different port. The operator\'s own session is forwarded only to this server (a loopback address on the port it listens on) — a cookie minted here is replayable against another Signal K instance, so anything else is never sent it and needs a credential issued for itself. Leave blank for this server\'s own history, or for an unauthenticated one.',
-        default: ''
-      },
-      historyProvider: {
-        type: 'string',
-        title: 'History provider (optional)',
-        description:
-          'Plugin id of a specific history provider, for example signalk-parquet. Leave blank to use the server default.',
-        default: ''
-      },
-      historyTimeoutMs: {
-        type: 'integer',
-        title: 'History request timeout (ms)',
-        description:
-          'How long each History API request of a replay (the path listing and each values read) may take. ' +
-          'A value under 30000, including 0, is taken as 30000: a replay always waits at least 30 s per request, and never without a limit.',
-        default: DEFAULT_HISTORY_TIMEOUT_MS,
-        minimum: 0,
-        maximum: 120000
-      }
-    }
-  });
+  // The settings form; lib/settings.cjs holds it, with readSettings(), which
+  // turns what the form stores into the flat settings the code below reads.
+  const schema = () => settingsSchema();
 
   /**
    * HTTP status for an error code.
@@ -705,11 +581,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
   };
 
-  // Without this the admin UI renders the key as an ordinary text input, so
-  // the token is on screen in cleartext and echoed back on every page load.
-  const uiSchema = () => ({
-    historyApiKey: { 'ui:widget': 'password' }
-  });
+  const uiSchema = () => settingsUiSchema();
 
   return {
     id: 'signalk-watchkeeper',
@@ -721,19 +593,20 @@ module.exports = function createPlugin(app, dependencies = {}) {
       pluginOptions = options;
       running = true;
       lifecycleGeneration += 1;
-      watchService.start(options);
-      // A model is named but its server URL was refused: say so where the
+      const settings = readSettings(options);
+      watchService.start(settings);
+      // A model is named but its server address was refused: say so where the
       // operator looks, not only when a rule fails to read.
-      const watch = normalizeWatchConfig(options);
+      const watch = normalizeWatchConfig(settings);
       const assistProblem =
         watch.ruleAssistModel && watch.ollamaUrlProblem
-          ? `Rules the parser cannot read are not sent to ${watch.ruleAssistModel}: the "Ollama server for reading rules" setting (ollamaUrl) ${watch.ollamaUrlProblem}.`
+          ? `Wordings the built-in reader cannot read are not sent to ${watch.ruleAssistModel}: the "${SETTING_LABELS.ollamaUrl}" setting ${watch.ollamaUrlProblem}.`
           : '';
       if (assistProblem && typeof app.error === 'function') {
         app.error(`Watchkeeper: ${assistProblem}`);
       }
       if (typeof app.setPluginStatus === 'function') {
-        const state = options.watchEnabled === true ? 'Watchkeeper is watching.' : 'Watchkeeper is off; enable the watch in its settings.';
+        const state = watch.watchEnabled ? 'Watchkeeper is watching.' : `Watchkeeper is off; switch on "${SETTING_LABELS.watchEnabled}" in its settings.`;
         app.setPluginStatus(assistProblem ? `${state} ${assistProblem}` : state);
       }
     },

@@ -540,7 +540,7 @@ export default function WatchPanel(props: WatchPanelProps) {
         <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>Reading watch status…</p>
       ) : !status.enabled ? (
         <p style={{ margin: '0.5rem 0 0 0' }}>
-          Off. Enable <strong>Watch all Signal K paths</strong> in the plugin settings to learn how this vessel
+          Off. Switch on <strong>Turn on Watchkeeper</strong> in the plugin settings to learn how this vessel
           normally behaves and be told when something departs from it. It runs on the CPU and needs no language model.
         </p>
       ) : (
@@ -631,7 +631,7 @@ export default function WatchPanel(props: WatchPanelProps) {
                   <p style={{ margin: '0.2rem 0 0 0', color: compiled.source === 'model' ? '#b45309' : '#475569', fontSize: '0.9rem' }}>
                     {compiled.source === 'model'
                       ? `Interpreted by ${compiled.model ?? 'the model'}: check the reading above before adding it.`
-                      : 'Read by the parser, without a model.'}{' '}
+                      : 'Read by the built-in reader, without a model.'}{' '}
                     {describeCompileEvidence(compiled)}
                   </p>
                   <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem' }}>

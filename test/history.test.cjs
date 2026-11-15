@@ -152,7 +152,7 @@ describe('history configuration', () => {
       const config = normalizeHistoryConfig({ historyServerUrl: url }, {});
       assert.equal(config.historyServerUrl, '', url);
       assert.ok(config.historyServerUrlProblem, url);
-      assert.equal(config.historyServerUrlSource, '"Signal K server URL"');
+      assert.equal(config.historyServerUrlSource, '"History server address"');
     }
     const fromEnv = normalizeHistoryConfig({}, { SIGNALK_WATCHKEEPER_HISTORY_URL: 'not a url' });
     assert.equal(fromEnv.historyServerUrlSource, 'SIGNALK_WATCHKEEPER_HISTORY_URL');
@@ -292,7 +292,7 @@ describe('which ports are this server', () => {
       );
       assert.match(history.message, /its port is not known: it was started by systemd socket activation/);
       assert.match(history.message, /History API key/);
-      assert.doesNotMatch(history.message, /leave "Signal K server URL" blank/);
+      assert.doesNotMatch(history.message, /leave "History server address" blank/);
     });
 
     // Not socket activation: an invalid port is named as what it is.
@@ -836,7 +836,7 @@ describe('a server URL that must not be called or quoted', () => {
       });
       assert.equal(calls.length, 0, `${url} was called: ${calls.join(', ')}`);
       assert.doesNotMatch(listing.message, SECRETS, url);
-      assert.match(resolveHistoryBaseUrl(app, historyConfig({ historyServerUrl: url })), /^not called: the configured Signal K server URL /, url);
+      assert.match(resolveHistoryBaseUrl(app, historyConfig({ historyServerUrl: url })), /^not called: the configured History server address /, url);
     }
   });
 
