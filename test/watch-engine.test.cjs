@@ -191,6 +191,23 @@ describe('CodeRabbit review of PR 1: operating states', () => {
     ]);
     assert.equal(engine.status().regimeChanges.length, 0, 'the secondary source does not flip the regime');
   });
+
+  it('reads the engine state from its primary source on a path it does not watch', () => {
+    // Excluded from the watch, and in a second case past the cap on watched
+    // paths: neither has a baseline, but the engine state still comes from
+    // the source seen first.
+    for (const overrides of [{ watchExcludePaths: ['propulsion.main.revolutions'] }, { watchMaxPaths: 10 }]) {
+      const engine = newEngine(overrides);
+      const rand = noise(43);
+      const fill = Array.from({ length: 10 }, (_, index) => `environment.sensor${index}.temperature`);
+      run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [
+        ...fill.map((path) => [path, 290 + 0.1 * rand(), 'n2k.a']),
+        ['propulsion.main.revolutions', 20 + 0.1 * rand(), 'n2k.a'],
+        ['propulsion.main.revolutions', 0, 'n2k.b']
+      ]);
+      assert.equal(engine.status().regimeChanges.length, 0, JSON.stringify(overrides));
+    }
+  });
 });
 
 describe('CodeRabbit review of PR 1: incidents', () => {

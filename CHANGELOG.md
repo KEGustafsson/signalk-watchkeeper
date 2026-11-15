@@ -44,6 +44,12 @@ the move is listed under **Changed**.
 
 ### Fixed (from CodeRabbit's review of the import)
 
+- An operating state on a path the watch does not baseline (excluded, or
+  past the cap on watched paths) is read from the source seen first too: a
+  second source's first sample no longer takes over as its primary.
+- Every request's error reply body is waited for at most 2 s by the fetch
+  wrapper itself, also with no timeout set and when fetch ignores the
+  abort, and such a body ends as a timeout rather than as an empty reply.
 - A rule add redone after a restart that left no room, then one that did,
   is answered as stored, not "already 50 watches"; and a save the plugin
   was stopped during says what is stored (the change, or the options it
