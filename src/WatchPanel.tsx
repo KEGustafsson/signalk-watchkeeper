@@ -2,6 +2,7 @@ import React from 'react';
 import {
   createLatestGate,
   incidentText,
+  omittedText,
   reportText,
   unusualText,
   describeCompileEvidence,
@@ -427,6 +428,9 @@ export default function WatchPanel(props: WatchPanelProps) {
             {formatClockTime(incident.openedAt)} · {formatAgo(incident.openedAt, now)}
           </span>
         </div>
+        {omittedText(incident) ? (
+          <p style={{ margin: '0.3rem 0 0 0', fontSize: '0.8rem', color: '#475569' }}>{omittedText(incident)}, to keep the incident short.</p>
+        ) : null}
         <ol style={{ margin: '0.4rem 0 0 0', paddingLeft: '1.2rem', display: 'grid', gap: '0.35rem' }}>
           {incident.findings.map((finding, index) => {
             const trend = trends[finding.path];
@@ -623,6 +627,7 @@ export default function WatchPanel(props: WatchPanelProps) {
                   <p style={{ margin: 0 }}>
                     <strong>{compiled.description}</strong>
                   </p>
+                  {compiled.reading ? <p style={{ margin: '0.2rem 0 0 0', color: '#b45309', fontSize: '0.9rem' }}>{compiled.reading}</p> : null}
                   <p style={{ margin: '0.2rem 0 0 0', color: compiled.source === 'model' ? '#b45309' : '#475569', fontSize: '0.9rem' }}>
                     {compiled.source === 'model'
                       ? `Interpreted by ${compiled.model ?? 'the model'}: check the reading above before adding it.`

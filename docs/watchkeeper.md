@@ -153,7 +153,7 @@ Each watched path keeps a small, serialisable state object
 
 | Learned | How |
 | --- | --- |
-| Update interval | Moving average of the time between accepted samples. A gap long enough to be a dropout (`max(30 s, 10 × usual interval)`) is an outage. One that follows regular samples is left out of the interval, so one hour of silence does not stretch a 30 s sensor's interval past the regularity limit and hide its next outage, and a sensor that fails again and again has every outage reported. Long gaps one right after another - a sender that reports on change, or goes quiet at night - are its rhythm and count, each up to that limit, so it is not reported at every gap of the night. The interval it was regular at is the one it is judged by afterwards, as only a regular gap (no longer than a regular path's limit) updates it. A path that was regular before such a run stays watched while the run is unconfirmed, but only for a silence of an hour or more, or 1.5 times the longest gap it has come back from when that is longer: a sensor whose gaps grew and that then went silent for good is still reported, and one that reports on change, at night up to two hours apart, is not reported at each of its gaps. Such a raised path, like one with a learned cycle, does not count toward the data feed's steady paths until its dropout is active, so a gateway that takes down six steady paths and eight raised ones is one silent feed. Eight long gaps in a row, each within half of the run's mean, are taken as the new interval at once. So is a repeating cycle: eight outages of about one size, each after a burst of at most 30 samples - a pair of readings every five minutes - make the cycle's mean gap the interval. A path that has settled (more than 30 regular gaps in a row) needs 24 such outages: until then they are a sensor failing, however regular, and each is reported. Once a cycle is learned, the dropout limit is at least twice its longest outage, whatever the mean gap: a burst sender (ten readings a second apart, then five minutes quiet) is not reported at each quiet spell, and a sensor that fails in a rhythm and then dies is reported (a dismissal lengthens that limit too). A settled regular stretch - more than 30 gaps in a row short enough for a regular path - clears the learned cycle, and so does a plain slower rate (eight long gaps in a row); a slow cycle's own five-minute gaps never do. A restart gives a saved settled path a cycle limit back only if its outages were silences well beyond its interval (more than 1.5 times it), not a sensor that merely slowed down. While it reports, such a path does not count toward the data feed's steady paths; once its dropout is active it counts, regular and silent, so a gateway taking it down with the rest is one silent feed |
+| Update interval | Moving average of the time between accepted samples. A gap long enough to be a dropout (`max(30 s, 10 × usual interval)`) is an outage. One that follows regular samples is left out of the interval, so one hour of silence does not stretch a 30 s sensor's interval past the regularity limit and hide its next outage, and a sensor that fails again and again has every outage reported. Long gaps one right after another - a sender that reports on change, or goes quiet at night - are its rhythm and count, each up to that limit, so it is not reported at every gap of the night. The interval it was regular at is the one it is judged by afterwards: it is updated only while the interval is still a regular path's (a minute at most), so later long gaps do not carry it up, and one short gap after the rise - a second reading a second after a long gap - does not copy the raised interval into it. A path that was regular before such a run stays watched while the run is unconfirmed, but only for a silence of an hour or more, or 1.5 times the longest gap it has come back from since it last settled regular when that is longer - a gap that ended while the interval was still regular, an outage, counts as two hours at most, so two days unplugged do not make a later death wait three days: a sensor whose gaps grew and that then went silent for good is still reported, and one that reports on change, at night up to two hours apart, is not reported at each of its gaps. Such a raised path, like one with a learned cycle, does not count toward the data feed's steady paths until its dropout is active, so a gateway that takes down six steady paths and eight raised ones is one silent feed. Eight long gaps in a row, each within half of the run's mean, are taken as the new interval at once. So is a repeating cycle: eight outages of about one size, each after a burst of at most 30 samples - a pair of readings every five minutes - make the cycle's mean gap the interval. A path that has settled (more than 30 regular gaps in a row) needs 24 such outages: until then they are a sensor failing, however regular, and each is reported. Once a cycle is learned, the dropout limit is at least twice its longest outage, whatever the mean gap: a burst sender (ten readings a second apart, then five minutes quiet) is not reported at each quiet spell, and a sensor that fails in a rhythm and then dies is reported (a dismissal lengthens that limit too). A settled regular stretch - more than 30 gaps in a row short enough for a regular path - clears the learned cycle, and so does a plain slower rate (eight long gaps in a row); a slow cycle's own five-minute gaps never do. A restart gives a saved settled path a cycle limit back only if its outages were silences well beyond its interval (more than 1.5 times it), not a sensor that merely slowed down. While it reports, such a path does not count toward the data feed's steady paths; once its dropout is active it counts, regular and silent, so a gateway taking it down with the rest is one silent feed |
 | Baseline mean and spread | Exponentially weighted, half-life **30 min**, time-based so "30 minutes" means 30 minutes at any update rate. While a path is learning, the weight is at least `1/n`, so the first minutes are a plain average |
 | Fast average | Exponentially weighted, half-life **8 s**, used to compare against the baseline. A one-sample spike barely moves it |
 | Sensor resolution | The smallest non-zero step seen three times (within 10 %) among the last 8 steps, where a step that goes straight back the way the one before it came counts once with it. The noise floor is at least twice it, but no more than the coarsest real senders of the unit allow (16 kPa for pressure, ten times the unit's floor otherwise, so 0.05 for a tank: one eighth step stays quiet and full to empty is still reported; 5 % of the value without a unit, but never less than two counts on a whole-number path). A single step, or a glitch out and straight back followed by a real drop of the same size, is not evidence of resolution: a tank that sat at 80 % and dropped to 20 % would otherwise have learned a 60-point resolution and hidden its own drop |
@@ -201,7 +201,7 @@ been watched for `watchLearningMinutes` (default 30).
 | --- | --- | --- | --- |
 | **Unusually high / low** (`shift`) | `\|z\| ≥ zWarn`; clears below `zClear` | `alert` at `\|z\| ≥ zAlert`, else `warn` | 15 s / 60 s |
 | **Stopped updating** (`dropout`) | A path that updates at least once a minute (30+ samples) has been silent for more than `max(30 s, 10 × usual interval)` | `warn` | immediate / on next update |
-| **Data feed silent** (`feed`) | At least 4 regularly updating paths, and at least half of them, are silent at once. Reported once instead of per path. Decided over all paths, and reported unless the silence is only the muted paths': at least half of the unmuted regular paths must be silent too, so a gateway that dies is a silent feed even with some of its paths muted, and muted paths going quiet alone are not. A muted path counts only if it went quiet about when the unmuted ones did (within 5 minutes of the longest of their silences): a sensor muted because it is unplugged is not evidence that the feed died now, and is left out of the paths the half is taken of. At least 4 unmuted paths (or all of them, if fewer) must be silent. Muting `feed` mutes it; the silent paths' dropouts stay folded into it while muted | `alert` | immediate |
+| **Data feed silent** (`feed`) | At least 4 regularly updating paths, and at least half of them, are silent at once, having gone quiet together, with nothing on their connections still reporting. Together: each silent path's silence may have begun at one moment - within 5 minutes or its own dropout limit after its last sample for a steady path, within its limit for a cycling or raised one - and the largest such group is the candidate; a path that went quiet long before keeps its own dropout and is left out of the count. A connection is the part of the source before the first dot (`can0` of `can0.35`); paths with no known source are one. A path that reported after the group went quiet (by more than twice the group's shortest interval, 5 s to 1 min) is live, a raised or cycling one included, and counts toward the paths the half is taken of; a connection with a live path did not die, so its silent paths are their own dropouts. A raised or cycling path that is neither silent nor live is left out. Reported once instead of per path. Decided over all paths, and reported unless the silence is only the muted paths': at least half of the unmuted regular paths must be silent too, so a gateway that dies is a silent feed even with some of its paths muted, and muted paths going quiet alone are not. A muted path counts only if it went quiet about when the unmuted ones did (within 5 minutes of the longest of their silences) and its connection has no live path: a sensor muted because it is unplugged is not evidence that the feed died now, and is left out of the paths the half is taken of. At least 4 unmuted paths (or all of them, if fewer) must be silent. The dropouts of the paths it counts fold into it; other dropouts stay open. Muting `feed` mutes it; the counted paths' dropouts stay folded into it while muted | `alert` | immediate |
 | **Looks stuck** (`frozen`) | A continuous path that changed on at least half its updates repeats exactly the same non-zero value 30+ times over 5+ minutes (100+ samples learned) | `warn` | immediate |
 | **New state** (`newState`) | A discrete path takes a value never seen before, after learning. Held 10 minutes | `warn` | immediate |
 | **Cycling** (`cycling`) | After 6 h of observation, transitions in the last hour ≥ `max(4, 3 × usual hourly rate + 2)` | `alert` at twice that, else `warn` | immediate / 10 min |
@@ -353,7 +353,9 @@ in the same system (the first two path segments, for example
 finding. GNSS findings only ever group with GNSS findings. Findings are listed
 in the order they started, so the first one is labelled *first sign*. An
 incident keeps at most 50 findings: past that its oldest cleared ones are
-dropped, and its title (*… (+N related)*) still counts them. The last 50
+dropped, its title (*… (+N related)*) still counts them, and the incident
+carries their number as `omitted`, which the panel and the copied incident text
+show as *N earlier findings not shown*. The last 50
 incidents are kept.
 
 **Notifications.** Each watched path gets one notification carrying its worst
@@ -407,13 +409,30 @@ A rule is stored data, checked deterministically on every tick:
 - A negated comparison is its opposite, inclusive: "not above 95" is
   `atMost` 95, "not below 12" `atLeast` 12, "does not exceed" `atMost`, in a
   rule and in its guard. "No higher than 14" is `atMost` 14 and "no lower
-  than 12" `atLeast` 12.
-- A limit is not negated: "should not exceed 14 V", "must not go above 95",
-  "can't drop below 12" and the other modal forms (should, must, may, shall,
-  can, could, will, would, and their contractions) read like "never above":
-  the watch fires when the limit is crossed, `above` 14, `below` 12.
-- A comparison negated twice ("is not not above 95") is refused rather than
-  read either way.
+  than 12" `atLeast` 12; "no hotter, warmer or faster than" are `atMost`,
+  "no colder, cooler or slower than" `atLeast`.
+- A rule says when to alert. A limit is not negated: "should not exceed 14
+  V", "must not go above 95", "can't drop below 12" and the other modal
+  forms (should, must, may, shall, can, could, will, would, and their
+  contractions) read like "never above": the watch fires when the limit is
+  crossed, `above` 14, `below` 12.
+- A requirement without "not" - should, must, shall, needs to, has to or
+  ought to, then the comparison or be, stay, remain, keep, be kept or read -
+  says what is normal, and the watch fires on its opposite: "should be below
+  14 V" is `atLeast` 14, "must stay above 12 V" `atMost` 12, "should be no
+  higher than 14 V" `above` 14 (the same as "should not exceed 14 V"). The
+  read-back says the request was read as what is normal, and the rule it
+  shows ("Warn when ... is at least 14.0 V") is the alert.
+- Refused as ambiguous, with the phrasings to use instead: may, might, can,
+  could, will or would without "not" ("may be above 14 V" says neither when
+  to alert nor what is normal); a requirement with a verb of crossing
+  ("tell me if it should drop below 12 V" may be the alert itself, "should
+  exceed 12 V" what is normal); and a requirement in a "while", which says
+  when the watch applies, not what is normal. A limit with "not" in a
+  "while" keeps its comparison, as in the rule.
+- A comparison negated twice ("is not not above 95", "is not no higher than
+  14", "never goes no higher than 14") is refused rather than read either
+  way.
 - `op` is one of `above`, `below`, `atLeast`, `atMost` (numbers; `atLeast`
   and `atMost` are the inclusive `>=` and `<=`, so "at least 12 V" holds at
   exactly 12 V), `equals`, `notEquals` or `changes`.
@@ -638,7 +657,9 @@ for the log** puts these lines on the clipboard.
 ## HTTP API
 
 All routes are under `/plugins/signalk-watchkeeper`. While the plugin is stopped
-they answer `503`. Routes marked *write* need a login with `readwrite` or
+they answer `503`; a rule add, remove or save the plugin stops right after
+storing answers `503` saying the change was saved, so it is not made again.
+Routes marked *write* need a login with `readwrite` or
 `admin` access when Signal K security is on, and answer `401` otherwise.
 
 | Route | | Returns |
@@ -650,7 +671,7 @@ they answer `503`. Routes marked *write* need a login with `readwrite` or
 | `POST /watch/mute` | write | Body `{ path, minutes }`. Returns `{ mutes }` |
 | `POST /watch/unmute` | write | Body `{ path }`. Returns `{ mutes }` |
 | `POST /watch/replay` | write | Body `{ duration?: "PT24H", paths?: [] }`. Returns `ok`, `from`, `to`, `resolutionSeconds`, `pathsReplayed` (asked for), `pathsEvaluated` (with any data), `pathsFailed?` (in requests that could not be read), `pathsSkipped?`, `rows`, `truncated?` and `rowsDropped?`, `historyGaps?`, `findingsOpened`, `incidentsOpened`, `byDetector`, `incidents`, `failures?`, `note`. With no rows at all (nothing recorded, or nothing readable) it returns only `ok: false` and a `message`, without `truncated`, `rowsDropped` or `note`. `409` while another replay runs |
-| `POST /watch/rules/compile` | write | Body `{ text, path? }` (`path` pins the subject after a "which one?"). Returns `ok`, `source`, `model?`, `rule`, `description`, `current`, `wouldFireNow`, `recent`; or `ok: false`, `reason`, `alternatives[]`, `assistNote?`, `assist?` (`off` when no model is set, `not-asked` when `ollamaUrl` is refused; `model` is then absent) |
+| `POST /watch/rules/compile` | write | Body `{ text, path? }` (`path` pins the subject after a "which one?"). Returns `ok`, `source`, `model?`, `rule`, `description` (the rule as the alert it is), `reading?` (when a requirement was read as what is normal), `current`, `wouldFireNow`, `recent`; or `ok: false`, `reason`, `alternatives[]`, `assistNote?`, `assist?` (`off` when no model is set, `not-asked` when `ollamaUrl` is refused; `model` is then absent) |
 | `POST /watch/rules/add` | write | Body `{ rule }`. Adds it, or replaces the rule with its id. Returns `{ rules }`; `409` when 50 watches already exist |
 | `POST /watch/rules/remove` | write | Body `{ id }`. Returns `{ rules }`; `404` with `{ rules }` when no watch with that id is stored |
 | `POST /watch/rules/save` | write | Body `{ rules: [...] }`, the full list, for tools that manage it as a unit. Invalid rules are dropped. Returns `{ rules }` |

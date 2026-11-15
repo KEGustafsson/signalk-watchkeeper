@@ -247,6 +247,24 @@ module.exports = function createPlugin(app, dependencies = {}) {
     return true;
   };
 
+  // A save the plugin stopped right after: the change is stored, so the
+  // reply says so (and that it need not be made again) instead of the
+  // generic "stopped", and sends no stopped plugin's lists.
+  const rejectIfStoppedAfterSave = (res, saved) => {
+    if (running) {
+      return false;
+    }
+    res.status(503).json({
+      error: {
+        code: 'disabled',
+        message: saved
+          ? 'The change was saved, but the plugin stopped before it could reply; reload once it runs again instead of making the change again.'
+          : 'Watchkeeper is stopped.'
+      }
+    });
+    return true;
+  };
+
   /**
    * May this request change what the watch does (mute, feedback, rules,
    * replay)?
@@ -529,9 +547,12 @@ module.exports = function createPlugin(app, dependencies = {}) {
    * two panels, or two quick clicks, apply to each other's result instead of
    * one overwriting the other from a stale list.
    */
+  // `{ rules, saved }`: the list, and whether the change was written (the
+  // last attempt's, so a redo that found nothing to do is not).
   const changeWatchRules = async (change) => {
     let rules;
     let generation;
+    let saved = false;
     await updatePluginOptions((current) => {
       generation = lifecycleGeneration;
       const before = normalizeRules(current.watchRules);
@@ -539,13 +560,14 @@ module.exports = function createPlugin(app, dependencies = {}) {
       // Nothing changed (a refused add, an unknown id): write nothing, so a
       // no-op neither rewrites the settings nor fails on a host that cannot
       // store them.
-      if (JSON.stringify(rules) === JSON.stringify(before)) {
+      saved = JSON.stringify(rules) !== JSON.stringify(before);
+      if (!saved) {
         return current;
       }
       return { ...current, watchRules: rules };
     });
     // Restarted meanwhile: the new start already loaded the stored rules.
-    return generation === lifecycleGeneration ? watchService.setRules(rules) : rules;
+    return { rules: generation === lifecycleGeneration ? watchService.setRules(rules) : rules, saved };
   };
 
   /** POST /watch/rules/add { rule }: add one rule (or replace the one with its id). */
@@ -578,7 +600,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       // What a rule says, without when it was made or what it is called.
       const content = ({ id, createdAt, ...rest }) => JSON.stringify(rest);
       const base = rule.id;
-      const rules = await changeWatchRules((current) => {
+      const { rules, saved } = await changeWatchRules((current) => {
         // Decided afresh on each attempt: a redo after a restart may find
         // room the first attempt did not.
         full = false;
@@ -599,6 +621,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
         }
         return [...others, rule];
       });
+      // Stopped between the save and this reply: no lists from a stopped
+      // plugin for the panel to take as the stored ones.
+      if (rejectIfStoppedAfterSave(res, saved)) return;
       if (full) {
         res.status(statusForCode('conflict')).json({
           error: { code: 'conflict', message: `There are already ${MAX_RULES} watches; remove one first.` }
@@ -624,11 +649,12 @@ module.exports = function createPlugin(app, dependencies = {}) {
         return;
       }
       let found = false;
-      const rules = await changeWatchRules((current) => {
+      const { rules, saved } = await changeWatchRules((current) => {
         // Once found, found: a redo after a restart sees the list it wrote.
         found = found || current.some((item) => item.id === id);
         return current.filter((item) => item.id !== id);
       });
+      if (rejectIfStoppedAfterSave(res, saved)) return;
       // An id that is not stored (a panel open across an upgrade that changed
       // derived ids, say) is not reported as removed.
       if (!found) {
@@ -664,7 +690,8 @@ module.exports = function createPlugin(app, dependencies = {}) {
         res.status(400).json({ error: { code: 'validation-failed', message: problem } });
         return;
       }
-      const rules = await changeWatchRules(() => body.rules);
+      const { rules, saved } = await changeWatchRules(() => body.rules);
+      if (rejectIfStoppedAfterSave(res, saved)) return;
       res.status(200).json({ rules });
     } catch (error) {
       sendError(res, error, 500, 'Could not save the watch rules.');

@@ -130,6 +130,46 @@ describe('createTimedFetch', () => {
     assert.equal(getEventListeners(caller.signal, 'abort').length, 0);
   });
 
+  it('stops watching the request\'s abort once a body has ended', async () => {
+    // Whole, failed or cancelled: each ends the watch on the signal fetch got.
+    const bodies = {
+      whole: () => '{"ok":true}',
+      failed: () =>
+        new ReadableStream({
+          pull(controller) {
+            controller.error(new Error('connection reset'));
+          }
+        }),
+      cancelled: () =>
+        new ReadableStream({
+          pull(controller) {
+            controller.enqueue(new Uint8Array([123]));
+          }
+        })
+    };
+    for (const [ending, body] of Object.entries(bodies)) {
+      let listeners = 0;
+      const timedFetch = createTimedFetch(async (_input, init) => {
+        const add = init.signal.addEventListener.bind(init.signal);
+        const remove = init.signal.removeEventListener.bind(init.signal);
+        init.signal.addEventListener = (type, fn, options) => {
+          if (type === 'abort') listeners += 1;
+          return add(type, fn, options);
+        };
+        init.signal.removeEventListener = (type, fn, options) => {
+          if (type === 'abort') listeners -= 1;
+          return remove(type, fn, options);
+        };
+        return new Response(body(), { status: 200, headers: { 'content-type': 'application/json' } });
+      }, 1000);
+      const response = await timedFetch('http://localhost:11434/api/tags');
+      if (ending === 'whole') assert.deepEqual(await response.json(), { ok: true });
+      if (ending === 'failed') await assert.rejects(response.text(), /connection reset/);
+      if (ending === 'cancelled') await response.body.cancel();
+      assert.equal(listeners, 0, ending);
+    }
+  });
+
   it('reads a long body in bounded memory', { timeout: 30000 }, async () => {
     const v8 = require('node:v8');
     const vm = require('node:vm');

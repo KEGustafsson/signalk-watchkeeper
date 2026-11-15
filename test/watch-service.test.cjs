@@ -556,6 +556,71 @@ describe('stored settings and the write queue', () => {
     assert.doesNotMatch(JSON.stringify(reply.body), /nothing was saved/);
   });
 
+  it('sends no stopped plugin\'s lists when it stops right after a save', async () => {
+    const cases = [];
+    for (const depth of [1, 2]) {
+      cases.push(['POST /watch/rules/add', { rule: rule('r-b', 370) }, depth]);
+      cases.push(['POST /watch/rules/remove', { id: 'r-a' }, depth]);
+      cases.push(['POST /watch/rules/save', { rules: [rule('r-c', 380)] }, depth]);
+    }
+    for (const [route, body, depth] of cases) {
+      const host = createHost();
+      let plugin;
+      let writes = 0;
+      host.savePluginOptions = (options, done) => {
+        writes += 1;
+        done();
+        // Stopped a microtask or two after the write lands: after the queue
+        // has answered, before the handler replies.
+        let later = Promise.resolve();
+        for (let step = 0; step < depth; step += 1) later = later.then(() => {});
+        later.then(() => plugin.stop());
+      };
+      const created = routesFor(host);
+      plugin = created.plugin;
+      plugin.start({ watchEnabled: true, watchRules: [rule('r-a')] });
+      const reply = recorder();
+      await created.routes[route]({ body }, reply);
+      assert.equal(writes, 1, `${route} after ${depth}`);
+      assert.equal(reply.statusCode, 503, `${route} after ${depth}`);
+      assert.equal(reply.body.rules, undefined, `${route} after ${depth}`);
+      // The change is stored: the reply says so, so it is not made again.
+      assert.match(reply.body.error.message, /change was saved/, `${route} after ${depth}`);
+      plugin.stop();
+    }
+    // Nothing written (a remove of a rule that is not there): the plain
+    // "stopped", not "saved", and no lists either.
+    for (const depth of [1, 2]) {
+      const host = createHost();
+      host.savePluginOptions = (options, done) => done();
+      const { plugin, routes } = routesFor(host);
+      // The remove reads the stored rules while the queue runs it: the stop
+      // is a microtask or two after that.
+      let armed = false;
+      const options = { watchEnabled: true };
+      Object.defineProperty(options, 'watchRules', {
+        enumerable: true,
+        get() {
+          if (armed) {
+            armed = false;
+            let later = Promise.resolve();
+            for (let step = 0; step < depth; step += 1) later = later.then(() => {});
+            later.then(() => plugin.stop());
+          }
+          return [rule('r-a')];
+        }
+      });
+      plugin.start(options);
+      armed = true;
+      const reply = recorder();
+      await routes['POST /watch/rules/remove']({ body: { id: 'r-nope' } }, reply);
+      assert.equal(reply.statusCode, 503, `after ${depth}`);
+      assert.equal(reply.body.rules, undefined, `after ${depth}`);
+      assert.equal(reply.body.error.message, 'Watchkeeper is stopped.', `after ${depth}`);
+      plugin.stop();
+    }
+  });
+
   it('redoes a change on the restart\'s options when a restart lands while its save is in flight', async () => {
     const host = createHost();
     let finish;

@@ -159,18 +159,81 @@ describe('watch detection: the learned update interval', () => {
   });
 
   it('still reports a sensor whose gaps grew before it went silent for good', () => {
-    const engine = newEngine();
-    const path = 'electrical.batteries.house.voltage';
-    const rand = noise(77);
-    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
-    // Growing gaps, one sample after each: no rate to learn from them.
-    for (const gap of [60, 120, 240, 480, 960, 1920, 3840]) {
-      t = run(engine, t, t + gap * SECOND, 5 * SECOND, () => []);
-      engine.ingest(path, 12.8 + 0.02 * rand(), t);
+    for (const second of [false, true]) {
+      const engine = newEngine();
+      const path = 'electrical.batteries.house.voltage';
+      const rand = noise(77);
+      let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+      // Growing gaps, one sample after each: no rate to learn from them.
+      for (const gap of [60, 120, 240, 480, 960, 1920, 3840]) {
+        t = run(engine, t, t + gap * SECOND, 5 * SECOND, () => []);
+        engine.ingest(path, 12.8 + 0.02 * rand(), t);
+      }
+      // A second reading a second after the last one is a short gap, but
+      // not a regular path's interval: it must not end the watch.
+      if (second) {
+        t += SECOND;
+        engine.ingest(path, 12.8 + 0.02 * rand(), t);
+      }
+      // Then nothing at all.
+      t = run(engine, t, t + 3 * HOUR, 5 * SECOND, () => []);
+      assert.ok(detectors(engine).includes(`dropout:${path}`), `its death is reported${second ? ' after a second reading' : ''}`);
     }
-    // Then nothing at all.
-    t = run(engine, t, t + 3 * HOUR, 5 * SECOND, () => []);
-    assert.ok(detectors(engine).includes(`dropout:${path}`), 'its death is reported');
+  });
+
+  it('reports the death of a sensor that sometimes sends a second reading after a long gap', () => {
+    for (const share of [0.1, 0.3]) {
+      const engine = newEngine();
+      const path = 'electrical.batteries.house.voltage';
+      const rand = noise(83);
+      let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+      // Six hours of gaps between 2 and 40 minutes, at random; some of the
+      // wake-ups send a second reading ten seconds after the first.
+      const end = t + 6 * HOUR;
+      while (t < end) {
+        const gap = Math.round(((2 + 38 * (0.5 + 0.5 * rand())) * MINUTE) / (5 * SECOND)) * 5 * SECOND;
+        t = run(engine, t, t + gap, 5 * SECOND, () => []);
+        engine.ingest(path, 12.8 + 0.02 * rand(), t);
+        if (0.5 + 0.5 * rand() < share) {
+          t += 10 * SECOND;
+          engine.ingest(path, 12.8 + 0.02 * rand(), t);
+        }
+      }
+      t = run(engine, t, t + 10 * HOUR, 30 * SECOND, () => []);
+      assert.ok(detectors(engine).includes(`dropout:${path}`), `its death is reported (${share * 100}% second readings)`);
+    }
+  });
+
+  it('does not let an outage of a regular path set how long its later silences may be', () => {
+    for (const backRegular of [true, false]) {
+      const engine = newEngine();
+      const path = 'environment.inside.cyc.temperature';
+      const rand = noise(61);
+      let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 293 + 0.05 * rand()]]);
+      // Unplugged for two days (reported), then back - regular for 2 h, or
+      // straight away slow...
+      t = run(engine, t, t + 48 * HOUR, 30 * SECOND, () => []);
+      if (backRegular) {
+        t = run(engine, t, t + 2 * HOUR, SECOND, () => [[path, 293 + 0.05 * rand()]]);
+        assert.ok(!detectors(engine).includes(`dropout:${path}`), 'back and regular');
+      }
+      // ...one sample every 5 min for 4 h, then it dies.
+      const start = t;
+      t = run(engine, t, t + 4 * HOUR, SECOND, (at) => ((at - start) % (5 * MINUTE) === 0 ? [[path, 293 + 0.05 * rand()]] : []));
+      const died = t;
+      let at;
+      for (let now = t; now < t + 6 * HOUR && at === undefined; now += 30 * SECOND) {
+        engine.tick(now);
+        if (detectors(engine).includes(`dropout:${path}`)) at = now;
+      }
+      // Without the outage it is 55 min: the two days are not the sender's
+      // rhythm (and count at most two hours when nothing regular followed).
+      const bound = backRegular ? 90 * MINUTE : 3 * HOUR + 10 * MINUTE;
+      assert.ok(
+        at !== undefined && at - died <= bound,
+        `its death is reported${backRegular ? '' : ' (slow at once)'} (after ${at === undefined ? 'more than 6 h' : `${(at - died) / MINUTE} min`})`
+      );
+    }
   });
 
   it('reports a gateway that takes steady and raised paths down as one silent feed', () => {
@@ -1029,16 +1092,27 @@ describe('review of 21f6d5f: healed saves and replay counts', () => {
     const restarted = newEngine();
     restarted.importState(saved, t);
     // Judged the same with and without a restart: the import gives it no
-    // cycle limit of its own. 30 min of quiet is within the hour a slowed
-    // path is allowed; 2 h is beyond it either way.
-    const quiet = (target, minutes) => {
-      const end = run(target, t, t + minutes * MINUTE, 5 * SECOND, () => []);
-      return detectors(target).includes(`dropout:${path}`) ? end : undefined;
-    };
-    assert.equal(quiet(restarted, 30), undefined, '30 min after the restart is not a dropout');
-    assert.equal(quiet(engine, 30), undefined, '30 min without a restart is not a dropout');
+    // cycle limit of its own, so over two hours of quiet both report it once
+    // the hour a slowed path is allowed is up - not at 10 min, as a cycle
+    // limit would, and not never. The restart counts the silence from
+    // itself, so it reports up to one interval (5 min) later.
     const state = (target) => target.exportState(t).paths.find((item) => item.path === path);
     assert.equal(state(restarted).cycleLimit, state(engine).cycleLimit, 'no cycle limit from the import');
+    const options = { minSamples: 30, maxRegularIntervalMs: MINUTE, dropoutMinMs: 30 * SECOND, dropoutFactor: 10 };
+    const firstDropout = (target) => {
+      const { limit } = monitor.evaluateDropout(state(target), t, options).evidence;
+      for (let now = t; now <= t + 2 * HOUR; now += 5 * SECOND) {
+        target.tick(now);
+        if (detectors(target).includes(`dropout:${path}`)) return { after: now - t, limit };
+      }
+      return undefined;
+    };
+    const withRestart = firstDropout(restarted);
+    const without = firstDropout(engine);
+    assert.ok(without && withRestart, 'two hours of quiet are a dropout either way');
+    assert.equal(withRestart.limit, without.limit, 'judged by the same limit');
+    assert.ok(without.after >= 50 * MINUTE && without.after <= HOUR, `without a restart after ${without.after / MINUTE} min`);
+    assert.ok(withRestart.after >= without.after && withRestart.after - without.after <= 5 * MINUTE, `after the restart ${withRestart.after / MINUTE} min`);
   });
 
   it('names each distinct replay failure once', async () => {
@@ -1116,3 +1190,76 @@ describe('review of 21f6d5f: healed saves and replay counts', () => {
   });
 });
 
+
+describe('review of 58a9678: which silences are one silent feed', () => {
+  // Steady paths, and quiet ones whose interval long growing gaps raised.
+  function raisedFeed(steadyCount, quietCount) {
+    const engine = newEngine();
+    const rand = noise(81);
+    const steady = Array.from({ length: steadyCount }, (_, index) => `environment.steady${index}.temperature`);
+    const quiet = Array.from({ length: quietCount }, (_, index) => `environment.quiet${index}.temperature`);
+    const sample = (path) => [path, 290 + 0.1 * rand()];
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [...steady, ...quiet].map(sample));
+    for (const gap of [60, 120, 240, 480, 960, 1920, 3840]) {
+      const end = t + gap * SECOND;
+      t = run(engine, t, end, SECOND, () => steady.map(sample));
+      for (const path of quiet) engine.ingest(path, 290 + 0.1 * rand(), t);
+    }
+    return { engine, steady, quiet, sample, t };
+  }
+
+  it('reports raised paths that die while the rest of the feed reports as their own dropouts', () => {
+    const { engine, steady, quiet, sample, t: from } = raisedFeed(4, 8);
+    // The steady paths keep reporting, four quiet ones every 20 min, and
+    // the other four die.
+    const dead = quiet.slice(0, 4);
+    const live = quiet.slice(4);
+    let feedSeen = false;
+    let t = from;
+    for (const end = from + 5 * HOUR; t < end; ) {
+      t = run(engine, t, t + 20 * MINUTE, SECOND, () => steady.map(sample));
+      for (const path of live) engine.ingest(path, 290.15, t);
+      feedSeen = feedSeen || detectors(engine).includes('feed:feed');
+    }
+    assert.equal(feedSeen, false, 'no silent feed while its steady paths report');
+    assert.deepEqual(detectors(engine).sort(), dead.map((path) => `dropout:${path}`).sort());
+  });
+
+  it('does not take paths that went quiet an hour before the rest for part of the feed silence', () => {
+    const engine = newEngine();
+    const names = Array.from({ length: 10 }, (_, index) => `environment.sensor${index}.temperature`);
+    const early = names.slice(0, 4);
+    const later = names.slice(4);
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, () => names.map((name) => [name, 290.15]));
+    // Four sensors die: four dropouts, the rest of the feed reports.
+    t = run(engine, t, t + HOUR, SECOND, () => later.map((name) => [name, 290.15]));
+    assert.deepEqual(detectors(engine).sort(), early.map((name) => `dropout:${name}`).sort());
+    // An hour later the rest go quiet together: a silent feed, and the four
+    // dead sensors keep their own findings.
+    t = run(engine, t, t + 2 * MINUTE, SECOND, () => []);
+    assert.deepEqual(detectors(engine).sort(), ['feed:feed', ...early.map((name) => `dropout:${name}`)].sort());
+  });
+
+  it('reports a connection that went silent, not one that still reports', () => {
+    const engine = newEngine();
+    const first = Array.from({ length: 6 }, (_, index) => [`environment.a${index}.temperature`, `can0.${10 + index}`]);
+    const second = Array.from({ length: 6 }, (_, index) => [`environment.b${index}.temperature`, `can1.${10 + index}`]);
+    const sample = (list) => list.map(([path, source]) => [path, 290.15, source]);
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, () => sample([...first, ...second]));
+    // Half the vessel's devices go quiet, four on can0 and two on can1,
+    // while the rest of both connections reports: their own dropouts, not a
+    // silent feed.
+    const quiet = [...first.slice(0, 4), ...second.slice(0, 2)];
+    t = run(engine, t, t + 2 * MINUTE, SECOND, () => sample([...first.slice(4), ...second.slice(2)]));
+    assert.deepEqual(detectors(engine).sort(), quiet.map(([path]) => `dropout:${path}`).sort());
+    t = run(engine, t, t + 2 * MINUTE, SECOND, () => sample([...first, ...second]));
+    assert.deepEqual(detectors(engine), []);
+    // can1 goes quiet as a whole while can0 reports: half the vessel, one
+    // connection, one silent feed.
+    run(engine, t, t + 2 * MINUTE, SECOND, () => sample(first));
+    assert.deepEqual(detectors(engine), ['feed:feed']);
+    const feed = engine.status().activeFindings.find((finding) => finding.detector === 'feed');
+    assert.match(feed.message, /can1\.10/);
+    assert.doesNotMatch(feed.message, /can0/);
+  });
+});

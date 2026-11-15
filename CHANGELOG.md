@@ -56,11 +56,14 @@ the move is listed under **Changed**.
   wrapper itself, also with no timeout set and when fetch ignores the
   abort, and such a body ends as a timeout rather than as an empty reply.
   An error body nobody reads releases the caller's abort listener when its
-  2 s are up, and a long body is read in constant memory.
+  2 s are up, and a long body is read in constant memory. A body that ends
+  (whole, failed or cancelled) stops watching the request's abort.
 - A rule add redone after a restart that left no room, then one that did,
   is answered as stored, not "already 50 watches"; and a save the plugin
   was stopped during says what is stored (the change, or the options it
-  restarted with).
+  restarted with). A rule add, remove or save that the plugin stops right
+  after storing answers 503 saying the change was saved, so it is not made
+  again, instead of the stopped plugin's lists or a plain "stopped".
 - Error text keeps the host that failed when a URL is followed by a quote,
   a bracket or a backslash and a later `@`, and an `@` after `//` inside a
   path is kept.
@@ -72,7 +75,18 @@ the move is listed under **Changed**.
   "may not" and the other modal forms keeps its comparison, like "never" and
   "shouldn't" ("should not exceed 14 V" is `above` 14, not `atMost`); "no
   higher than" is `atMost` and "no lower than" `atLeast` (they were `above`
-  and `below`); and a comparison negated twice is refused.
+  and `below`), as are "no hotter, warmer or faster than" (`atMost`) and "no
+  colder, cooler or slower than" (`atLeast`); and a comparison negated twice
+  ("not not above", "is not no higher than", "never goes no higher than") is
+  refused. A requirement without "not" ("should be below 14 V", "must stay
+  above 12 V", "needs to be at least 20 %", with should, must, shall, needs
+  to, has to or ought to) says what is normal, so the rule alerts on its
+  opposite (`atLeast` 14, `atMost` 12, `below` 20): "should be no higher than
+  14 V" alerts above 14 V, like "should not exceed 14 V", instead of while the
+  voltage is normal. The read-back says so. "May", "can", "will" and the
+  like without "not", a requirement with a verb of crossing ("should drop
+  below 12 V", which may be the alert itself) and a requirement in a "while"
+  are refused as ambiguous, with the phrasings to use instead.
 - An operating state (engine running, charger mode) is read from its path's
   primary source only: a second source reporting another value no longer
   flips it on every sample and keeps the paths it gates relearning.
@@ -83,7 +97,22 @@ the move is listed under **Changed**.
   dead sensor goes unreported. Such a path no longer counts toward the data
   feed's steady paths while it reports, so a gateway that goes down with
   regular and raised paths behind it is reported as one silent feed at once,
-  not as separate dropouts an hour later.
+  not as separate dropouts an hour later. One short gap after the interval
+  rose (a second reading a second after a long gap) no longer copies the
+  raised interval into the regular one, which hid the sensor's death for
+  good; and a path that settles regular again forgets the longest gap it
+  came back from, and counts an outage that ended while it was still regular
+  as two hours at most: a sensor unplugged for two days, back, slowed and
+  then dead is reported after about an hour (under three if it came back
+  slow at once), not after three days.
+- A silent data feed is paths that went quiet together, on connections with
+  nothing still reporting: raised paths that die over a night while steady
+  ones report are their own dropouts, not one "Signal K data stopped
+  arriving" that folds them in; a raised path that reports counts as live;
+  paths that went quiet an hour before the rest keep their own findings; and
+  half the vessel's devices going quiet while every connection still reports
+  is their dropouts, while one connection (`can1`) going quiet as a whole is
+  a silent feed.
 - A rule whose value or guard is edited waits its full duration again, like
   one moved to another path; a "changes" rule whose guard or value is edited
   does not report the change it already reported again.
@@ -93,7 +122,9 @@ the move is listed under **Changed**.
   rule without one.
 - An incident kept active by one open finding keeps at most 50 findings: a
   neighbour that clears and recurs no longer grows it without end. Its title
-  still counts the findings dropped (*+120 related*, not *+49*).
+  still counts the findings dropped (*+120 related*, not *+49*), and the
+  panel and the copied incident text say how many earlier findings are not
+  shown.
 - A malformed metadata entry, or a bad value on the stream bus, is recorded
   as an error instead of costing the rest of the delta.
 - Replay releases the body of a request it could not read, and an error

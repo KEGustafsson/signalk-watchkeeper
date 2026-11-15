@@ -1238,3 +1238,100 @@ describe('review of 842b674..56822ed: devices, rooms and edited rules', () => {
     assert.equal(open[0].path, starter);
   });
 });
+
+describe('review of 58a9678: comparisons, negations and what a rule says is normal', () => {
+  const BOAT = [
+    ...VESSEL,
+    { path: 'environment.water.temperature', role: 'watching' },
+    { path: 'navigation.speedOverGround', role: 'watching' }
+  ];
+  const read = (text) => {
+    const result = parseRule(text, BOAT);
+    assert.equal(result.ok, true, `${text}: ${result.reason}`);
+    return result;
+  };
+
+  it('reads "no hotter, warmer or faster than" as at most and "no colder, cooler or slower than" as at least', () => {
+    const cases = [
+      ['coolant no hotter than 95 °C', 'propulsion.main.temperature', 'atMost'],
+      ['engine temperature no warmer than 95 °C', 'propulsion.main.temperature', 'atMost'],
+      ['speed over ground no faster than 6 knots', 'navigation.speedOverGround', 'atMost'],
+      ['water temperature no colder than 5 °C', 'environment.water.temperature', 'atLeast'],
+      ['water temperature is no cooler than 5 °C', 'environment.water.temperature', 'atLeast'],
+      ['speed over ground no slower than 2 knots', 'navigation.speedOverGround', 'atLeast'],
+      // Negated with "not", they were right already.
+      ['coolant not hotter than 95 °C', 'propulsion.main.temperature', 'atMost']
+    ];
+    for (const [text, path, op] of cases) {
+      const { rule } = read(text);
+      assert.equal(rule.path, path, text);
+      assert.equal(rule.op, op, text);
+    }
+  });
+
+  it('refuses a negated comparison that is a negation already', () => {
+    for (const text of [
+      'battery voltage is not no higher than 14 V',
+      'battery voltage not no lower than 12 V',
+      'battery voltage should not be no more than 14 V',
+      "battery voltage shouldn't be no more than 14 V",
+      'battery voltage never goes no higher than 14 V',
+      'coolant is not no hotter than 95 °C'
+    ]) {
+      const result = parseRule(text, BOAT);
+      assert.equal(result.ok, false, text);
+      assert.match(result.reason, /negates the comparison twice/, text);
+    }
+  });
+
+  it('reads a requirement as what is normal, and alerts on its opposite', () => {
+    const cases = [
+      // As before: the limit, with "not".
+      ['battery voltage should not exceed 14 V', 'above'],
+      ['battery voltage should not be below 12 V', 'below'],
+      ["battery voltage shouldn't exceed 14 V", 'above'],
+      ['battery voltage cannot exceed 14 V', 'above'],
+      ['battery voltage should never exceed 14 V', 'above'],
+      // Without it, what is normal: the alert is the other side.
+      ['battery voltage should be no higher than 14 V', 'above'],
+      ['battery voltage must be no more than 14 V', 'above'],
+      ['battery voltage should be below 14 V', 'atLeast'],
+      ['battery voltage should stay below 14 V', 'atLeast'],
+      ['battery voltage must remain above 12 V', 'atMost'],
+      ['battery voltage needs to be at least 12 V', 'below'],
+      ['battery voltage has to be at most 14 V', 'above'],
+      ['battery voltage ought to stay above 12 V', 'atMost'],
+      ['battery voltage shall be more than 12 V', 'atMost']
+    ];
+    for (const [text, op] of cases) {
+      const { rule } = read(text);
+      assert.equal(rule.path, 'electrical.batteries.house.voltage', text);
+      assert.equal(rule.op, op, text);
+    }
+    // Said back, so the operator sees which side alerts.
+    const normal = read('battery voltage should stay below 14 V');
+    assert.match(normal.reading, /"should stay below 14 v" says what is normal/);
+    assert.equal(describeRule(normal.rule), 'Warn when House battery voltage is at least 14.00 V');
+    assert.equal(read('battery voltage should not exceed 14 V').reading, undefined, 'a limit needs no note');
+  });
+
+  it('refuses a modal that does not say whether the comparison is the alert or what is normal', () => {
+    for (const [text, pattern] of [
+      ['battery voltage may be above 14 V', /"may be" does not say whether above 14 v is when to alert or what is normal/],
+      ['battery voltage can be below 12 V', /"can be"/],
+      ['battery voltage will be above 14 V', /"will be"/],
+      ['battery voltage would be above 14 V', /"would be"/],
+      // "Tell me if it should drop below 12 V" may be the alert itself.
+      ['tell me if battery voltage should drop below 12 V', /"should drop below" may say when to alert or what is normal/],
+      ['battery voltage must exceed 12 V', /"must exceed" may say when to alert/]
+    ]) {
+      const result = parseRule(text, BOAT);
+      assert.equal(result.ok, false, text);
+      assert.match(result.reason, pattern, text);
+    }
+    // A "while" says when the watch applies: what is normal is no answer.
+    const guarded = parseRule('coolant above 95 °C while the engine revolutions should be above 600 rpm', BOAT);
+    assert.equal(guarded.ok, false);
+    assert.match(guarded.reason, /a "while" says when the watch applies/);
+  });
+});

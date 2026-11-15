@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createLatestGate, incidentText, reportText, unusualText, describeCompileEvidence, describeDetectorCounts, storedRule, describeInventoryRow, formatAgo, sparklinePoints } from './watchText.js';
+import { createLatestGate, incidentText, omittedText, reportText, unusualText, describeCompileEvidence, describeDetectorCounts, storedRule, describeInventoryRow, formatAgo, sparklinePoints } from './watchText.js';
 import type { WatchIncident } from './watchText.js';
 
 const incident: WatchIncident = {
@@ -50,6 +50,15 @@ describe('incidentText', () => {
     const text = incidentText(many);
     assert.ok(text.length < 2200);
     assert.match(text, /…and \d+ more/);
+  });
+
+  it('says how many earlier findings were dropped to keep it bounded', () => {
+    const lines = incidentText({ ...incident, omitted: 3 }).split('\n');
+    assert.match(lines[1], /temperature unusually high/, 'the first sign stays first');
+    assert.equal(lines[2], '- (3 earlier findings not shown)');
+    assert.equal(lines.length, 4);
+    assert.ok(!incidentText({ ...incident, omitted: 0 }).includes('not shown'));
+    assert.equal(omittedText({ ...incident, omitted: 1 }), '1 earlier finding not shown');
   });
 });
 

@@ -30,6 +30,14 @@ export interface WatchIncident {
   readonly severity: WatchSeverity;
   readonly title: string;
   readonly findings: readonly WatchFinding[];
+  /** Earlier cleared findings dropped to keep the incident bounded. */
+  readonly omitted?: number;
+}
+
+/** "3 earlier findings not shown", or '' when none were dropped. */
+export function omittedText(incident: WatchIncident): string {
+  const omitted = incident.omitted ?? 0;
+  return omitted > 0 ? `${omitted} earlier finding${omitted === 1 ? '' : 's'} not shown` : '';
 }
 
 export interface WatchRegimeChange {
@@ -153,6 +161,8 @@ export interface WatchRuleCompileResult {
   readonly assistNote?: string;
   readonly rule?: WatchRule;
   readonly description?: string;
+  /** How the parser read a request that says what is normal, not when to alert. */
+  readonly reading?: string;
   readonly current?: { readonly text: string };
   readonly wouldFireNow?: boolean | null;
   readonly recent?: { readonly minutes: number; readonly share: number };
@@ -275,6 +285,10 @@ export function incidentText(incident: WatchIncident): string {
     lines.push(line);
     used += line.length + 1;
   }
+  // Findings dropped to keep the incident bounded still happened: said, after
+  // the first sign they followed.
+  const omitted = omittedText(incident);
+  if (omitted) lines.splice(Math.min(1, lines.length), 0, `- (${omitted})`);
   return [header, ...lines].join('\n');
 }
 

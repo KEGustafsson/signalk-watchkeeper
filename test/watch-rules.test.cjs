@@ -249,6 +249,14 @@ describe('rules in the watch', () => {
       assert.equal(byParser.source, 'parser');
       assert.equal(byParser.description, 'Warn when Main engine temperature is above 100.0 °C');
       assert.equal(calls.length, 0, 'the parser needed no model');
+      assert.equal(byParser.reading, undefined);
+
+      // A request that says what is normal is said back as the alert it is.
+      const normal = await service.compileRule({ text: 'the coolant should stay below 100' });
+      assert.equal(normal.ok, true);
+      assert.equal(normal.description, 'Warn when Main engine temperature is at least 100.0 °C');
+      assert.equal(normal.reading, '"should stay below 100" says what is normal, so this watches for the opposite.');
+      assert.equal(calls.length, 0);
 
       const byModel = await service.compileRule({ text: 'shout if the engine is cooking' });
       assert.equal(byModel.ok, true);
