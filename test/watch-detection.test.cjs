@@ -1610,20 +1610,48 @@ describe('review of 76b201d: outages while raised, feeds held for a slow path, c
     assert.deepEqual(opened.map(([key, at]) => [key, at / SECOND]), [['feed:feed', 95]]);
   });
 
-  it('waits at most five minutes for a raised path on the connection', () => {
-    // A raised path on the gateway that reported 2 min before it died, with
-    // gaps of about two minutes: the feed waits for its next sample, but
-    // not past five minutes.
-    const times = [...Array.from({ length: 2400 }, (_, index) => T0 + index * SECOND)];
-    for (let at = T0 + 40 * MINUTE; at < D - 2 * MINUTE; ) {
-      at += (times.length % 2 ? 130 : 110) * SECOND;
-      times.push(at);
-    }
-    const raised = { path: 'environment.raised.temperature', source: 'gw.70', times: times.filter((at) => at < D - 2 * MINUTE) };
-    const { opened } = simulate([...fast, raised], D, D + 15 * MINUTE);
+  /** A raised path on `source`: every second for 40 min, then the gaps of `pattern` (s), the last sample at `last`. */
+  const raisedEnding = (last, pattern, source = 'gw.70') => {
+    const times = Array.from({ length: 2400 }, (_, index) => T0 + index * SECOND);
+    for (let at = last, index = 0; at > T0 + 40 * MINUTE; at -= pattern[index++ % pattern.length] * SECOND) times.push(at);
+    return { path: 'environment.raised.temperature', source, times };
+  };
+
+  it('waits at most two minutes for a raised path on the connection, and not past its due time (review of 5294dcc)', () => {
+    // Gaps of about two minutes. Its last sample 2 min before the gateway
+    // died: the feed waits until that path is past its due time (1.5 times
+    // its gap), not for minutes after it.
+    const early = simulate([...fast, raisedEnding(D - 2 * MINUTE, [110, 130])], D, D + 15 * MINUTE).opened.find(([key]) => key === 'feed:feed');
+    assert.ok(early && early[1] > 30 * SECOND && early[1] <= 75 * SECOND, `the silent feed after ${early && early[1] / SECOND} s`);
+    // Its last sample 10 s before: due within the wait, which ends two
+    // minutes after the gateway went quiet.
+    const { opened } = simulate([...fast, raisedEnding(D - 10 * SECOND, [110, 130])], D, D + 15 * MINUTE);
     const feed = opened.find(([key]) => key === 'feed:feed');
-    assert.ok(feed && feed[1] > 2 * MINUTE && feed[1] <= 5 * MINUTE + 5 * SECOND, `the silent feed after ${feed && feed[1] / SECOND} s`);
+    assert.ok(feed && feed[1] > 90 * SECOND && feed[1] <= 2 * MINUTE + 5 * SECOND, `the silent feed after ${feed && feed[1] / SECOND} s`);
     assert.deepEqual(opened.filter(([key]) => key.startsWith('dropout:electrical.fast')), []);
+  });
+
+  it('does not wait for a raised path already past its due time (review of 5294dcc)', () => {
+    // Gaps of 90 to 240 s, the last 200 s before the gateway died.
+    const { opened } = simulate([...fast, raisedEnding(D - 200 * SECOND, [90, 150, 200, 240, 180, 120, 210])], D, D + 10 * MINUTE);
+    assert.deepEqual(opened.map(([key, at]) => [key, at / SECOND]), [['feed:feed', 30]]);
+  });
+
+  it('does not start the wait again when paths elsewhere die later (review of 5294dcc)', () => {
+    // A gateway with a raised path dies; another connection's four paths die
+    // one by one, 4 min apart: the gateway is the silent feed at once, and
+    // stays one.
+    const later = Array.from({ length: 4 }, (_, index) => paths(`later${index}`, 1, `gwB.${index}`, SECOND, D + (index + 1) * 4 * MINUTE)[0]);
+    const pattern = [90, 150, 200, 240, 180, 120, 210];
+    const { opened, closed } = simulate([...fast, raisedEnding(D - 10 * SECOND, pattern), ...later], D, D + 20 * MINUTE);
+    assert.deepEqual(opened.find(([key]) => key === 'feed:feed'), ['feed:feed', 30 * SECOND]);
+    assert.deepEqual(closed.filter(([key]) => key === 'feed:feed'), []);
+    // A raised path due within the wait, and one path elsewhere dying a
+    // minute in: the wait still ends two minutes after the gateway went
+    // quiet, not two minutes after that path did.
+    const held = simulate([...fast, raisedEnding(D - 10 * SECOND, [120]), ...paths('other', 2, (index) => `gwB.${index}`, SECOND, D + MINUTE)], D, D + 10 * MINUTE);
+    const feed = held.opened.find(([key]) => key === 'feed:feed');
+    assert.ok(feed && feed[1] <= 2 * MINUTE + 5 * SECOND, `the silent feed after ${feed && feed[1] / SECOND} s`);
   });
 
   it('keeps one incident when a silent feed clears into its paths\' dropouts', () => {
@@ -1637,6 +1665,10 @@ describe('review of 76b201d: outages while raised, feeds held for a slow path, c
     const incidents = engine.status().incidents.filter((incident) => incident.openedAt >= D);
     assert.equal(incidents.length, 1, incidents.map((incident) => `${incident.status} ${incident.title}`).join(' | '));
     assert.equal(incidents[0].status, 'active');
+    // Named by what is happening now, not by the feed that cleared (review
+    // of 5294dcc); the feed is still one of its findings.
+    assert.match(incidents[0].title, /^Electrical fast\d+ voltage stopped updating \(\+12 related\)$/);
+    assert.ok(incidents[0].findings.some((entry) => entry.detector === 'feed'));
   });
 
   it('judges a bounded number of moments however many paths went quiet apart', () => {

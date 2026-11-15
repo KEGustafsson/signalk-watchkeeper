@@ -292,8 +292,12 @@ describe('CodeRabbit review of PR 1: negated comparisons', () => {
       assert.equal(result.rule.path, 'electrical.batteries.house.voltage', text);
       assert.equal(result.rule.op, op, text);
     }
+    // In a "while" it says what is normal, not when the watch applies: refused
+    // (review of 5294dcc), as a requirement there is.
     const guarded = parseRule('coolant above 95 °C while the engine revolutions should not drop below 600 rpm', VESSEL);
-    assert.equal(guarded.rule.when.op, 'below');
+    assert.equal(guarded.ok, false);
+    assert.equal(guarded.terminal, true);
+    assert.match(guarded.reason, /for example "while the engine revolutions are at least 600 rpm" or "while the engine revolutions are below 600 rpm"\.$/);
   });
 
   it('reads "no higher than" as at most and "no lower than" as at least', () => {
@@ -1421,7 +1425,8 @@ describe('review of 76b201d: a modal in a condition, and the phrasings offered',
   const read = (text) => parseRule(text, BOAT);
 
   it('refuses a modal about the comparison in a condition, however the condition is worded', () => {
-    const plainly = /Say "alert me if the battery voltage is below 12 V" or "the battery voltage should stay above 12 V"\.$/;
+    // One phrasing for each reading: the two opposite alerts (review of 5294dcc).
+    const plainly = /Say "alert me if the battery voltage is below 12 V" or "alert me if the battery voltage is at least 12 V"\.$/;
     for (const text of [
       'alert me if the battery voltage should be below 12 V',
       'alert me, if the battery voltage should be below 12 V',
@@ -1433,7 +1438,6 @@ describe('review of 76b201d: a modal in a condition, and the phrasings offered',
       'whenever the battery voltage should be below 12 V alert me',
       'in case the battery voltage should be below 12 V, warn me',
       'once the battery voltage should drop below 12 V, alert me',
-      'the battery voltage should be below 12 V, tell me',
       'tell me if the battery voltage must stay below 12 V',
       'alert me if the battery voltage should never be below 12 V',
       'alert me if the battery voltage may be below 12 V'
@@ -1445,14 +1449,14 @@ describe('review of 76b201d: a modal in a condition, and the phrasings offered',
     }
     // The words of a bound are offered as they were said, with the side
     // that says what is normal opposite.
-    for (const [text, alert, normal] of [
-      ['tell me if the battery voltage should be at least 14 V', 'is at least 14 V', 'should stay below 14 V'],
-      ['tell me if the battery voltage should be no higher than 14 V', 'is no higher than 14 V', 'should stay above 14 V'],
-      ['tell me if the battery voltage should not exceed 14 V', 'is above 14 V', 'should stay below 14 V']
+    for (const [text, alert, other] of [
+      ['tell me if the battery voltage should be at least 14 V', 'is at least 14 V', 'is below 14 V'],
+      ['tell me if the battery voltage should be no higher than 14 V', 'is no higher than 14 V', 'is above 14 V'],
+      ['tell me if the battery voltage should not exceed 14 V', 'is above 14 V', 'is at most 14 V']
     ]) {
       const result = read(text);
       assert.equal(result.terminal, true, text);
-      assert.ok(result.reason.endsWith(`Say "alert me if the battery voltage ${alert}" or "the battery voltage ${normal}".`), `${text}: ${result.reason}`);
+      assert.ok(result.reason.endsWith(`Say "alert me if the battery voltage ${alert}" or "alert me if the battery voltage ${other}".`), `${text}: ${result.reason}`);
     }
     // A name that ends in a modal word is no modal there either.
     const named = read('alert me if the jerry can is below 20 %');
@@ -1517,5 +1521,73 @@ describe("CodeRabbit's review of 76b201d: a joined clause refused as ambiguous",
     } finally {
       service.stop();
     }
+  });
+});
+
+describe('review of 5294dcc: how to be told, names with a condition word, and modal limits in a "while"', () => {
+  const BOAT = [...VESSEL, { path: 'electrical.batteries.once.voltage', displayName: 'Once battery', role: 'watching' }];
+  const read = (text) => parseRule(text, BOAT);
+  const rule = (text) => {
+    const result = read(text);
+    assert.equal(result.ok, true, `${text}: ${result.reason}`);
+    return result.rule;
+  };
+
+  it('reads a requirement with "tell me" after it, and nothing that says when before it, as what is normal', () => {
+    for (const [text, path, op] of [
+      ['depth should be at least 3 m, warn me', 'environment.depth.belowTransducer', 'below'],
+      ['coolant must stay below 95 °C, tell me', 'propulsion.main.temperature', 'atLeast'],
+      ['house battery voltage should stay above 12 V, alert me', 'electrical.batteries.house.voltage', 'atMost'],
+      ['house battery voltage should stay above 12 V and notify me', 'electrical.batteries.house.voltage', 'atMost'],
+      ['house battery voltage should stay above 12 V. Let me know.', 'electrical.batteries.house.voltage', 'atMost'],
+      ['the house battery voltage should be below 12 V, tell me', 'electrical.batteries.house.voltage', 'atLeast']
+    ]) {
+      const { path: got, op: gotOp } = rule(text);
+      assert.deepEqual([got, gotOp], [path, op], text);
+    }
+    // "If" or "when" before it still makes it the condition to alert on.
+    assert.equal(read('when the house battery voltage should be below 12 V, tell me').terminal, true);
+  });
+
+  it('takes "once" in one of the vessel\'s names for the name', () => {
+    const normal = rule('the once battery should stay above 12 V');
+    assert.deepEqual([normal.path, normal.op], ['electrical.batteries.once.voltage', 'atMost']);
+    const alert = rule('alert me if the once battery is below 12 V');
+    assert.deepEqual([alert.path, alert.op], ['electrical.batteries.once.voltage', 'below']);
+  });
+
+  it('offers a "while" for a condition said before the subject', () => {
+    const result = read('when the engine is running battery voltage should stay above 12 V');
+    assert.equal(result.terminal, true);
+    assert.match(result.reason, /say "battery voltage at most 12 V while the engine is running"\.$/);
+    assert.doesNotMatch(result.reason, /alert me if/);
+  });
+
+  it('refuses a limit said with a modal or "never" in a "while"', () => {
+    for (const text of [
+      'coolant above 95 °C while the engine revolutions should not exceed 600 rpm',
+      "coolant above 95 °C while the engine revolutions shouldn't exceed 600 rpm",
+      'coolant above 95 °C while the engine revolutions never exceed 600 rpm'
+    ]) {
+      const result = read(text);
+      assert.equal(result.ok, false, text);
+      assert.equal(result.terminal, true, `${text}: not passed to the model`);
+      assert.match(result.reason, /for example "while the engine revolutions are at most 600 rpm" or "while the engine revolutions are above 600 rpm"\.$/, text);
+    }
+  });
+
+  it('says a refused "while" in its own words, with the verb that fits', () => {
+    const required = read('coolant above 95 °C while the house battery voltage should be above 12 V');
+    assert.match(required.reason, /for example "while the house battery voltage is above 12 V"\.$/);
+    const possible = read('coolant above 95 °C while the engine revolutions may be above 600 rpm');
+    assert.match(possible.reason, /for example "while the engine revolutions are above 600 rpm"\.$/);
+  });
+
+  it('does not take the condition after "if" for the "while" before it', () => {
+    const result = read('alert while the engine is running if coolant should be above 95 °C');
+    assert.equal(result.terminal, true);
+    assert.match(result.reason, /^Could not read "coolant should be above 95 °C": "should be" says what is normal or what may happen, but the request also says when to alert/);
+    const plain = rule('alert while the engine state is on if coolant is above 95 °C');
+    assert.deepEqual([plain.path, plain.op, plain.when && plain.when.path], ['propulsion.main.temperature', 'above', 'propulsion.main.state']);
   });
 });

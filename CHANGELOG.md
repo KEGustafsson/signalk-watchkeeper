@@ -97,21 +97,33 @@ the move is listed under **Changed**.
   (verb and case kept: "must stays above 12 V", not "must above 12 v").
   A modal about the comparison in a request that also says when to alert -
   "if", "when", "whenever", "in case" or "once" anywhere before it, whatever
-  the punctuation, or "..., tell me" after it - is refused: "alert me if the
-  battery voltage should be below 12 V" may mean below 12 V or what is
-  normal, and trivial rewordings ("alert me, if", "please, tell me if",
-  "send me an alert if", "when ... should be below 12 V, tell me") no longer
-  flip the rule between the two, nor do "should be at least", "should be no
-  higher than" and "should not exceed" there give opposite rules. The
-  refusal offers the two plain phrasings ('Say "alert me if battery voltage
-  is below 12 V" or "battery voltage should stay above 12 V"'), quoting the
-  condition without the "warn me" after it. "May", "can", "will" and the
+  the punctuation - is refused: "alert me if the battery voltage should be
+  below 12 V" may mean below 12 V or what is normal, and trivial rewordings
+  ("alert me, if", "please, tell me if", "send me an alert if", "when ...
+  should be below 12 V, tell me") no longer flip the rule between the two,
+  nor do "should be at least", "should be no higher than" and "should not
+  exceed" there give opposite rules. The refusal offers one plain phrasing
+  for each reading ('Say "alert me if battery voltage is below 12 V" or
+  "alert me if battery voltage is at least 12 V"'), quoting the condition
+  without the "warn me" after it. A "tell me", "alert me" or "let me know"
+  after a requirement with none of those words before it only says how to
+  be told: "depth should be at least 3 m, warn me" is below 3 m, and "coolant
+  must stay below 95 °C, tell me" at least 95 °C, as without it. A
+  condition said before the subject ("when the engine is running battery
+  voltage should stay above 12 V") is refused with the "while" to say
+  instead. "Once", "when" or "if" in a name on the vessel ("the once
+  battery") is no condition there. A "while" right before a clause makes it
+  the "while" wherever it stands: "alert while the engine state is on if
+  coolant is above 95 °C" watches the coolant, not the engine state. "May", "can", "will" and the
   like as a modal without "not" (with a verb after it, or before "exceed"),
   a requirement with a verb of crossing ("should drop below 12 V", which may
   be the alert itself) and a requirement in a "while" are refused as
   ambiguous, with the same phrasings - in a "while", the condition said
-  plainly ("while battery voltage is below 12 V"), as a "while" is no
-  alert; such refusals, like a comparison negated twice, are not passed to
+  plainly in the request's own words ("while battery voltage is below
+  12 V", "while the engine revolutions are above 600 rpm"), as a "while" is
+  no alert; so is a limit said with a modal or "never" in a "while" ("while
+  the engine revolutions should not exceed 600 rpm" was read as while they
+  are above 600 rpm), with both conditions offered; such refusals, like a comparison negated twice, are not passed to
   the model, which is told that such requests say neither side - also when
   the refused comparison is joined to another ("coolant above 95 °C and
   battery voltage may be below 12 V" is refused with that comparison's own
@@ -160,12 +172,18 @@ the move is listed under **Changed**.
   either way, the connection is undecided: neither the feed nor its silent
   paths' dropouts are reported until that path proves live (its paths'
   dropouts, at once) or misses its next sample (1.5 times its interval; the
-  feed, and no dropouts), and for five minutes at most. The feed alert
-  comes up to one slow interval later (95 s rather than 30 s with a 55 s
+  feed, and no dropouts), and for two minutes after that connection's paths
+  went quiet at most - a path elsewhere that dies later does not start the
+  wait again. A raised or cycling path that is past its own due time (1.5
+  times its gap) is not waited for: a gateway that dies with one on it is
+  reported in 30 s, not 5 minutes. The feed alert comes up to one slow
+  interval, at most two minutes, later (95 s rather than 30 s with a 55 s
   path that sent once after the rest stopped), and no longer opens and
   clears into the paths' dropouts a minute later, which split one event
   into two incidents; a finding that opens in the tick an incident resolved
-  joins it again. Only the newest moments that enough paths share to be a
+  joins it again, and names it: a silent feed that cleared into its paths'
+  dropouts no longer leaves an incident titled "Signal K data stopped
+  arriving" while data arrives. Only the newest moments that enough paths share to be a
   feed are judged, so a vessel with thousands of paths that died one by one
   no longer costs seconds every tick. The group that went quiet most
   recently is the feed, not an older and larger one (whose connection may
