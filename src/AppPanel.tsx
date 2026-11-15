@@ -1,5 +1,6 @@
 import React from 'react';
 import WatchPanel from './WatchPanel.js';
+import { loginNotice } from './loginNotice.js';
 import type { AppPanelProps } from './panelTypes.js';
 
 export const DEFAULT_PLUGIN_BASE = '/plugins/signalk-watchkeeper';
@@ -12,10 +13,10 @@ export function pluginEndpoint(props: AppPanelProps, route: string): string {
 
 export default function AppPanel(props: AppPanelProps) {
   const endpoint = React.useCallback((route: string) => pluginEndpoint(props, route), [props.pluginBase]);
-  const status = props.loginStatus;
   // Reading needs no login; muting, feedback, rules and replay need write access.
-  const needsLogin = Boolean(status && status.authenticationRequired && status.status !== 'loggedIn');
-  const readOnly = Boolean(status && status.status === 'loggedIn' && status.readOnlyAccess);
+  const notice = loginNotice(props.loginStatus);
+  const needsLogin = notice === 'log-in';
+  const readOnly = notice === 'read-only';
 
   return (
     <section style={{ padding: '1rem', fontFamily: 'system-ui, sans-serif' }}>

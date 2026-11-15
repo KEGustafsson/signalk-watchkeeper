@@ -283,7 +283,8 @@ describe('write access on a secured server', () => {
     const cases = [
       ['anonymous', { isDummy: () => false, getLoginStatus: () => ({ status: 'notLoggedIn' }) }, {}],
       ['read-only principal', { isDummy: () => false }, { skPrincipal: { permissions: 'readonly' } }],
-      ['read-only login status', { isDummy: () => false, getLoginStatus: () => ({ status: 'loggedIn', readOnlyAccess: true }) }, {}],
+      ['read-only login status', { isDummy: () => false, getLoginStatus: () => ({ status: 'loggedIn', userLevel: 'readonly' }) }, {}],
+      ['login status with no level', { isDummy: () => false, getLoginStatus: () => ({ status: 'loggedIn' }) }, {}],
       [
         'login status that throws',
         {
@@ -314,7 +315,14 @@ describe('write access on a secured server', () => {
 
   it('allows writes for a read-write login status, or an admin or read-write principal', async () => {
     const cases = [
-      ['read-write login status', { isDummy: () => false, getLoginStatus: () => ({ status: 'loggedIn' }) }, {}],
+      ['read-write login status', { isDummy: () => false, getLoginStatus: () => ({ status: 'loggedIn', userLevel: 'readwrite' }) }, {}],
+      // readOnlyAccess is the server's "Allow Readonly Access" setting, not
+      // the login's level: an admin on such a server may still write.
+      [
+        'admin login status on a server that allows read-only visitors',
+        { isDummy: () => false, getLoginStatus: () => ({ status: 'loggedIn', readOnlyAccess: true, userLevel: 'admin' }) },
+        {}
+      ],
       ['admin principal', { isDummy: () => false }, { skPrincipal: { permissions: 'admin' } }],
       ['read-write principal', { isDummy: () => false }, { skPrincipal: { permissions: 'readwrite' } }],
       ['dummy strategy', { isDummy: () => true }, {}]
