@@ -759,6 +759,39 @@ describe('stored settings and the write queue', () => {
     }
   });
 
+  it('answers 409 when the plugin restarts during every attempt, and 503 when it is left stopped', async () => {
+    for (const stopsAtLast of [false, true]) {
+      const host = createHost();
+      const options = { watchEnabled: true };
+      let saves = 0;
+      let plugin;
+      host.savePluginOptions = (stored, done) => {
+        saves += 1;
+        plugin.stop();
+        if (saves < 3 || !stopsAtLast) plugin.start({ ...options });
+        done();
+      };
+      const created = routesFor(host);
+      plugin = created.plugin;
+      plugin.start({ ...options });
+      try {
+        const reply = recorder();
+        await created.routes['POST /watch/rules/add']({ body: { rule: rule('r-busy') } }, reply);
+        assert.equal(saves, 3);
+        if (stopsAtLast) {
+          assert.equal(reply.statusCode, 503);
+          assert.equal(reply.body.error.code, 'disabled');
+          assert.match(reply.body.error.message, /plugin stopped/);
+        } else {
+          assert.equal(reply.statusCode, 409);
+          assert.match(reply.body.error.message, /kept restarting/);
+        }
+      } finally {
+        plugin.stop();
+      }
+    }
+  });
+
   it('writes nothing for a watch change that changes nothing', async () => {
     const writer = { skPrincipal: { permissions: 'admin' } };
     const rule = (id, value) => ({ id, text: id, path: 'propulsion.main.temperature', op: 'above', value, forSeconds: 0, severity: 'warn' });
