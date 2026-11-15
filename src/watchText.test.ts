@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { incidentText, reportText, unusualText, describeCompileEvidence, describeDetectorCounts, storedRule, describeInventoryRow, formatAgo, sparklinePoints } from './watchText.js';
+import { createLatestGate, incidentText, reportText, unusualText, describeCompileEvidence, describeDetectorCounts, storedRule, describeInventoryRow, formatAgo, sparklinePoints } from './watchText.js';
 import type { WatchIncident } from './watchText.js';
 
 const incident: WatchIncident = {
@@ -131,5 +131,18 @@ describe('reportText', () => {
   it('lists the measured lines under the window', () => {
     const text = reportText({ hours: 24, incidents: 1, findings: 2, lines: ['1 incident (0 alerts, 1 warning) from 2 findings.'] });
     assert.equal(text, 'Watch report for the last 24 h:\n- 1 incident (0 alerts, 1 warning) from 2 findings.');
+  });
+});
+
+describe('createLatestGate', () => {
+  it('takes an answer only when it is newer than every answer taken', () => {
+    const gate = createLatestGate();
+    const first = gate.begin();
+    const second = gate.begin();
+    // The second poll answers first; the first one, slower, comes after.
+    assert.equal(gate.accept(second), true);
+    assert.equal(gate.accept(first), false, 'an older poll does not replace a newer one');
+    const third = gate.begin();
+    assert.equal(gate.accept(third), true);
   });
 });

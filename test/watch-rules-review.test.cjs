@@ -222,6 +222,85 @@ describe('CodeRabbit full review: rule assist', () => {
   });
 });
 
+describe('CodeRabbit review of PR 1: rule assist guards', () => {
+  const candidates = VESSEL.slice(0, 4);
+  const options = { baseUrl: 'http://ollama:11434', model: 'm' };
+  const answer = (content) => async () => new Response(JSON.stringify({ message: { content } }), { status: 200 });
+  const base = { path: 'propulsion.main.temperature', op: 'above', value: 90, forSeconds: 0, severity: 'warn' };
+
+  it('refuses a guard with no operator or an unknown path instead of dropping it', async () => {
+    for (const guard of [
+      { whenPath: 'propulsion.main.state', whenOp: '', whenValue: 'running' },
+      { whenPath: 'not.a.listed.path', whenOp: 'equals', whenValue: 'running' }
+    ]) {
+      const result = await assistRule('x', candidates, options, { fetchImpl: answer(JSON.stringify({ ...base, ...guard })) });
+      assert.equal(result.ok, false, JSON.stringify(guard));
+      assert.match(result.message, /incomplete condition/);
+    }
+  });
+
+  it('keeps an empty whenPath as a rule with no guard', async () => {
+    const result = await assistRule('x', candidates, options, { fetchImpl: answer(JSON.stringify({ ...base, whenPath: '', whenOp: '', whenValue: '' })) });
+    assert.equal(result.ok, true);
+    assert.equal(result.rule.when, undefined);
+  });
+});
+
+describe('CodeRabbit review of PR 1: negated comparisons', () => {
+  it('reads "not above" as at most, and "not below" as at least, in a rule and its guard', () => {
+    const cases = [
+      ['coolant not above 95 °C', 'propulsion.main.temperature', 'atMost'],
+      ['coolant is not above 95 °C', 'propulsion.main.temperature', 'atMost'],
+      ['coolant does not exceed 95 °C', 'propulsion.main.temperature', 'atMost'],
+      ['battery not below 12 V', 'electrical.batteries.house.voltage', 'atLeast'],
+      ['battery is not at least 12 V', 'electrical.batteries.house.voltage', 'below']
+    ];
+    for (const [text, path, op] of cases) {
+      const result = parseRule(text, VESSEL);
+      assert.equal(result.ok, true, text);
+      assert.equal(result.rule.path, path, text);
+      assert.equal(result.rule.op, op, text);
+    }
+    const guarded = parseRule('coolant above 95 °C while the engine is not above 1000 rpm', VESSEL);
+    assert.equal(guarded.rule.op, 'above');
+    assert.equal(guarded.rule.when.op, 'atMost');
+  });
+});
+
+describe('CodeRabbit review of PR 1: stale values', () => {
+  it('does not report a change twice when its value goes stale and comes back', () => {
+    const engine = newEngine();
+    const pump = 'electrical.switches.bilgePump.state';
+    engine.setRules([{ id: 'r-pump', path: pump, op: 'changes', forSeconds: 0, source: 'manual' }]);
+    const opened = [];
+    let open = false;
+    const tick = (t) => {
+      engine.tick(t);
+      const now = engine.status(t).activeFindings.some((item) => item.detector === 'rule');
+      if (now && !open) opened.push((t - T0) / SECOND);
+      open = now;
+    };
+    let t = T0;
+    for (; t < T0 + 30 * SECOND; t += 5 * SECOND) {
+      engine.ingest(pump, false, t);
+      tick(t);
+    }
+    // It switches on once, is reported, then nothing is heard for 6 min.
+    for (; t < T0 + 60 * SECOND; t += 5 * SECOND) {
+      engine.ingest(pump, true, t);
+      tick(t);
+    }
+    const lastHeard = t;
+    for (; t < lastHeard + 6 * MINUTE; t += 5 * SECOND) tick(t);
+    // Heard from again, still on, within the change's ten-minute hold.
+    for (const end = t + MINUTE; t < end; t += 5 * SECOND) {
+      engine.ingest(pump, true, t);
+      tick(t);
+    }
+    assert.equal(opened.length, 1, `opened at ${opened.join(', ')} s`);
+  });
+});
+
 describe('review of c5649a1: phrasings the leftover check refused', () => {
   const BOAT = [
     ...VESSEL,
@@ -838,6 +917,29 @@ describe('CodeRabbit review of b103610..014985f, and the review of 014985f: rule
     engine.mute(pump, T0 + 1240 * SECOND, t);
     for (; t < T0 + 1600 * SECOND; t += 5 * SECOND) tick(t);
     assert.deepEqual(opened, [105], 'only the real change after the first mute');
+  });
+
+  it('makes a rule whose threshold was edited wait its full duration again', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    let t = T0;
+    engine.setRules([{ id: 'r-volt', path, op: 'above', value: 12, forSeconds: 60, source: 'manual' }]);
+    for (; t < T0 + 55 * SECOND; t += 5 * SECOND) {
+      engine.ingest(path, 12.5, t);
+      engine.tick(t);
+    }
+    engine.setRules([{ id: 'r-volt', path, op: 'above', value: 13.5, forSeconds: 60, source: 'manual' }]);
+    const editedAt = t;
+    for (; t < editedAt + 55 * SECOND; t += 5 * SECOND) {
+      engine.ingest(path, 14, t);
+      engine.tick(t);
+      assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 0, `${(t - editedAt) / SECOND} s after the edit`);
+    }
+    for (; t < editedAt + 2 * 60 * SECOND; t += 5 * SECOND) {
+      engine.ingest(path, 14, t);
+      engine.tick(t);
+    }
+    assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 1);
   });
 
   it('makes an edited rule wait its full duration on its new path', () => {

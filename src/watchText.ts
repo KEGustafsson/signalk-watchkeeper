@@ -327,3 +327,25 @@ export function describeDetectorCounts(byDetector: Readonly<Record<string, numbe
     .map(([detector, count]) => `${count} ${labels[detector] ?? (detector.startsWith('gnss.') ? `GNSS ${detector.slice(5)}` : detector)}`)
     .join(', ');
 }
+
+/**
+ * Orders overlapping requests: `begin()` numbers each one as it is sent,
+ * `accept(turn)` says whether its answer is newer than every answer already
+ * taken. A poll that took longer than the next one cannot put an older
+ * snapshot back over a newer one.
+ */
+export function createLatestGate(): { begin(): number; accept(turn: number): boolean } {
+  let sent = 0;
+  let accepted = 0;
+  return {
+    begin: () => {
+      sent += 1;
+      return sent;
+    },
+    accept: (turn: number) => {
+      if (turn <= accepted) return false;
+      accepted = turn;
+      return true;
+    }
+  };
+}

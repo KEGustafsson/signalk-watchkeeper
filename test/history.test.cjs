@@ -759,6 +759,34 @@ describe('reading a History API response', () => {
     assert.equal(outcome, 'too-large');
   });
 
+  it('stops waiting for an error body that never arrives', async () => {
+    const { readTextBounded } = require('../lib/history-service.cjs');
+    const stalled = { body: { getReader: () => ({ read: () => new Promise(() => {}), cancel: () => Promise.resolve() }) } };
+    let timer;
+    const outcome = await Promise.race([
+      readTextBounded(stalled, 4096, 50),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve('hung'), 1000);
+      })
+    ]);
+    clearTimeout(timer);
+    assert.equal(outcome, '');
+  });
+
+  it('answers a listing whose 500 body stalls with the status', async () => {
+    const response = { ok: false, status: 500, headers: new Map(), body: { getReader: () => ({ read: () => new Promise(() => {}), cancel: () => Promise.resolve() }) } };
+    let timer;
+    const outcome = await Promise.race([
+      listHistoryPaths({}, historyConfig({ historyServerUrl: 'http://boat.example:3000' }), { fetchImpl: async () => response }),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve('hung'), 5000);
+      })
+    ]);
+    clearTimeout(timer);
+    assert.notEqual(outcome, 'hung');
+    assert.match(outcome.message, /HTTP 500/);
+  });
+
   it('keeps only the bytes within the error-body limit, however large the first chunk', async () => {
     const { readTextBounded } = require('../lib/history-service.cjs');
     const kept = [];

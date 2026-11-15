@@ -179,6 +179,47 @@ describe('watch engine: timing', () => {
   });
 });
 
+describe('CodeRabbit review of PR 1: operating states', () => {
+  it('reads the engine state from its primary source only', () => {
+    const engine = newEngine();
+    const rand = noise(41);
+    run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [
+      ['propulsion.main.revolutions', 20 + 0.1 * rand(), 'n2k.a'],
+      // A second source that says the engine is stopped.
+      ['propulsion.main.revolutions', 0, 'n2k.b'],
+      ['propulsion.main.temperature', 353 + 0.1 * rand(), 'n2k.a']
+    ]);
+    assert.equal(engine.status().regimeChanges.length, 0, 'the secondary source does not flip the regime');
+  });
+});
+
+describe('CodeRabbit review of PR 1: incidents', () => {
+  it('keeps a long incident to a bounded number of findings', () => {
+    const engine = newEngine();
+    engine.setRules([
+      { id: 'r-house', path: 'electrical.batteries.house.voltage', op: 'below', value: 12, forSeconds: 0, source: 'manual' },
+      { id: 'r-start', path: 'electrical.batteries.start.voltage', op: 'below', value: 12, forSeconds: 0, source: 'manual' }
+    ]);
+    let t = T0;
+    // The house bank stays low; the start bank dips and recovers 120 times.
+    for (let cycle = 0; cycle < 120; cycle += 1) {
+      t = run(engine, t, t + 20 * SECOND, SECOND, () => [
+        ['electrical.batteries.house.voltage', 11.5],
+        ['electrical.batteries.start.voltage', 11.5]
+      ]);
+      t = run(engine, t, t + 60 * SECOND, SECOND, () => [
+        ['electrical.batteries.house.voltage', 11.5],
+        ['electrical.batteries.start.voltage', 12.8]
+      ]);
+    }
+    const incidents = engine.status().incidents.filter((incident) => incident.status === 'active');
+    assert.equal(incidents.length, 1);
+    const [incident] = incidents;
+    assert.ok(incident.findings.length <= 50, `${incident.findings.length} findings kept`);
+    assert.ok(incident.findings.some((entry) => entry.path === 'electrical.batteries.house.voltage' && entry.clearedAt === undefined), 'the open finding is kept');
+  });
+});
+
 describe('watch engine: discrete values', () => {
   it('reports a value the path has never taken', () => {
     const engine = newEngine();

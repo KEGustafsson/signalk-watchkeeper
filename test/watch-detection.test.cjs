@@ -158,6 +158,21 @@ describe('watch detection: the learned update interval', () => {
     assert.ok(opened <= 12, `${opened} dropouts`);
   });
 
+  it('still reports a sensor whose gaps grew before it went silent for good', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const rand = noise(77);
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    // Growing gaps, one sample after each: no rate to learn from them.
+    for (const gap of [60, 120, 240, 480, 960, 1920, 3840]) {
+      t = run(engine, t, t + gap * SECOND, 5 * SECOND, () => []);
+      engine.ingest(path, 12.8 + 0.02 * rand(), t);
+    }
+    // Then nothing at all.
+    t = run(engine, t, t + 3 * HOUR, 5 * SECOND, () => []);
+    assert.ok(detectors(engine).includes(`dropout:${path}`), 'its death is reported');
+  });
+
   it('learns a genuine slow-down from a steady run of long gaps', () => {
     const engine = newEngine();
     const rand = noise(9);
@@ -995,6 +1010,34 @@ describe('review of 21f6d5f: healed saves and replay counts', () => {
       assert.equal(result.pathsFailed, 50);
       assert.equal(result.note.split('HTTP 500').length - 1, 1, result.note);
       assert.match(result.note, /5 requests/);
+    } finally {
+      service.stop();
+    }
+  });
+
+  it('releases the body of a request it could not read', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const paths = ['environment.s0.temperature'];
+    let cancelled = 0;
+    const fetchImpl = async (url) => {
+      if (url.includes('/history/paths')) return new Response(JSON.stringify(paths), { status: 200 });
+      const body = new ReadableStream({
+        pull(controller) {
+          controller.enqueue(new TextEncoder().encode('boom'));
+        },
+        cancel() {
+          cancelled += 1;
+        }
+      });
+      return new Response(body, { status: 500 });
+    };
+    const service = createWatchService(createHost(), { now: () => end, fetchImpl });
+    service.start({ watchEnabled: true });
+    try {
+      const result = await service.replay({ duration: 'PT1H', paths }, { historyTimeoutMs: 5000 });
+      assert.equal(result.ok, false);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(cancelled, 1, 'the unread error body is cancelled');
     } finally {
       service.stop();
     }

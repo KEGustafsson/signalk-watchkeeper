@@ -42,6 +42,32 @@ the move is listed under **Changed**.
   mutes, feedback, the inventory of watched paths, "most unusual now", the
   report and replay.
 
+### Fixed (from CodeRabbit's review of the import)
+
+- "Not above 95 °C", "not below 12 V" and "does not exceed" are read as
+  their opposite (`atMost`, `atLeast`), in a rule and in its guard; "not
+  above" was stored as `above`.
+- An operating state (engine running, charger mode) is read from its path's
+  primary source only: a second source reporting another value no longer
+  flips it on every sample and keeps the paths it gates relearning.
+- A sensor whose gaps grew before it went silent for good is still reported
+  (after an hour's silence): unconfirmed long gaps no longer end its watch.
+- A rule whose value or guard is edited waits its full duration again, like
+  one moved to another path.
+- A "changes" rule whose value went stale does not report the same change
+  again when the value comes back.
+- A model's answer with an incomplete guard is refused instead of becoming a
+  rule without one.
+- An incident kept active by one open finding keeps at most 50 findings: a
+  neighbour that clears and recurs no longer grows it without end.
+- A malformed metadata entry, or a bad value on the stream bus, is recorded
+  as an error instead of costing the rest of the delta.
+- Replay releases the body of a request it could not read, and an error
+  reply whose body stalls no longer holds the replay for good (its body is
+  waited for 2 s).
+- The panel ignores a status poll that answers after a newer one.
+- CI runs the smoke test on the built panel too.
+
 ### Changed (in the move from signalk-ai-bridge)
 
 - The plugin id is `signalk-watchkeeper`, and routes are under

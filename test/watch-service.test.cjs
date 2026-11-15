@@ -109,6 +109,47 @@ describe('watch service', () => {
     assert.ok(service.inventory().paths.some((item) => item.path === 'propulsion.main.temperature'), 'the value after the bad one is still watched');
   });
 
+  it('keeps the rest of the metadata, and the stream bus, when one entry cannot be read', () => {
+    const host = createHost();
+    const clock = { t: Date.parse('2026-06-01T08:00:00Z') };
+    const service = createWatchService(host, { now: () => clock.t });
+    service.start({ watchEnabled: true });
+    const brokenMeta = {
+      get units() {
+        throw new Error('unreadable meta');
+      }
+    };
+    host.deltaCallback({
+      context: 'vessels.self',
+      updates: [{ $source: 'n2k.1', values: [{ path: 'a.one', value: 1 }, { path: 'b.two', value: 2 }] }]
+    });
+    assert.doesNotThrow(() =>
+      host.deltaCallback({
+        context: 'vessels.self',
+        updates: [{ meta: [{ path: 'a.one', value: brokenMeta }, { path: 'b.two', value: { units: 'V' } }] }]
+      })
+    );
+    assert.match(service.status().lastError, /Could not read metadata for a\.one: unreadable meta/);
+    assert.equal(service.inventory().paths.find((item) => item.path === 'b.two').units, 'V', 'the entry after the bad one is applied');
+    service.stop();
+
+    // A server without a subscription manager: the stream bus.
+    let onValue;
+    const bus = { onValue: (callback) => ((onValue = callback), () => {}) };
+    const busHost = { ...createHost(), subscriptionmanager: undefined, streambundle: { getSelfBus: () => bus } };
+    const busService = createWatchService(busHost, { now: () => clock.t });
+    busService.start({ watchEnabled: true });
+    const broken = {
+      get latitude() {
+        throw new Error('unreadable fix');
+      },
+      longitude: 24
+    };
+    assert.doesNotThrow(() => onValue({ path: 'navigation.position', value: broken, $source: 'gps.1' }));
+    assert.match(busService.status().lastError, /Could not watch navigation\.position: unreadable fix/);
+    busService.stop();
+  });
+
   it('subscribes to the self vessel and publishes findings as Signal K notifications', () => {
     const host = createHost();
     const clock = { t: Date.parse('2026-06-01T08:00:00Z') };

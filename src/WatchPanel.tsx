@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  createLatestGate,
   incidentText,
   reportText,
   unusualText,
@@ -142,11 +143,14 @@ export default function WatchPanel(props: WatchPanelProps) {
       return;
     }
     let active = true;
+    // A slow poll must not put an older snapshot back over a newer one.
+    const gate = createLatestGate();
     const load = () => {
+      const turn = gate.begin();
       fetchImpl(statusUrl, { method: 'GET', credentials: 'include' })
         .then(readJson)
         .then(({ ok, body }) => {
-          if (!active) return;
+          if (!active || !gate.accept(turn)) return;
           setUnreachable(!ok);
           if (ok) {
             setStatus(body as WatchStatus);
@@ -155,7 +159,7 @@ export default function WatchPanel(props: WatchPanelProps) {
           setNow(Date.now());
         })
         .catch(() => {
-          if (active) setUnreachable(true);
+          if (active && gate.accept(turn)) setUnreachable(true);
         });
     };
     load();

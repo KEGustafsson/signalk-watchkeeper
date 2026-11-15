@@ -46,6 +46,8 @@ API and tuning - is in [docs/watchkeeper.md](docs/watchkeeper.md).
 
 ## Install
 
+Watchkeeper needs a Signal K server running on Node.js 22.12 or later.
+
 From the Signal K server's App Store, search for **Watchkeeper**, or:
 
 ```bash

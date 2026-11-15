@@ -80,6 +80,13 @@ assert.match(
   'scripts/run-tests.mjs must degrade to the node:test suites when typescript is not installed'
 );
 
+// That check needs a build, so CI runs it again after one.
+assert.match(
+  fs.readFileSync('.github/workflows/ci.yml', 'utf8'),
+  /- run: npm run build\s*\n(?:\s*#.*\n)*\s*- run: npm run lint/,
+  'ci.yml must run the smoke test after building the panel'
+);
+
 // signalk-server picks the container script tag from package.json's "type":
 // with "module" it emits <script type="module" src=".../remoteEntry.js">, so
 // remoteEntry.js must be the ESM container, or the admin UI reports "Module
