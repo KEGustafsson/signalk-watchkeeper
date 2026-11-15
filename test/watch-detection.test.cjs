@@ -173,6 +173,48 @@ describe('watch detection: the learned update interval', () => {
     assert.ok(detectors(engine).includes(`dropout:${path}`), 'its death is reported');
   });
 
+  it('reports a gateway that takes steady and raised paths down as one silent feed', () => {
+    const engine = newEngine();
+    const rand = noise(81);
+    const steady = Array.from({ length: 6 }, (_, index) => `environment.steady${index}.temperature`);
+    const raised = Array.from({ length: 8 }, (_, index) => `environment.quiet${index}.temperature`);
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [...steady, ...raised].map((path) => [path, 290 + 0.1 * rand()]));
+    // The quiet paths' gaps grow: their interval is raised, with no rate learned.
+    for (const gap of [60, 120, 240, 480, 960, 1920, 3840]) {
+      const end = t + gap * SECOND;
+      t = run(engine, t, end, SECOND, () => steady.map((path) => [path, 290 + 0.1 * rand()]));
+      for (const path of raised) engine.ingest(path, 290 + 0.1 * rand(), t);
+    }
+    for (const path of raised) {
+      const state = engine.exportState(t).paths.find((item) => item.path === path);
+      assert.ok(state.intervalMean > 60 * SECOND, `${path} has a raised interval`);
+    }
+    // The gateway dies: every path stops.
+    const died = t;
+    let feedAt;
+    for (let now = t; now < t + 10 * MINUTE && feedAt === undefined; now += 5 * SECOND) {
+      engine.tick(now);
+      if (detectors(engine).includes('feed:feed')) feedAt = now;
+    }
+    assert.ok(feedAt !== undefined && feedAt - died <= 2 * MINUTE, `the silent feed is reported (after ${feedAt === undefined ? 'never' : (feedAt - died) / SECOND} s)`);
+  });
+
+  it('reports the death of a sensor whose gaps went up and down after it slowed', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const rand = noise(83);
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    // Six hours of gaps between 2 and 40 minutes, at random.
+    const end = t + 6 * HOUR;
+    while (t < end) {
+      const gap = (2 + 38 * (0.5 + 0.5 * rand())) * MINUTE;
+      t = run(engine, t, t + gap, 5 * SECOND, () => []);
+      engine.ingest(path, 12.8 + 0.02 * rand(), t);
+    }
+    t = run(engine, t, t + 10 * HOUR, 30 * SECOND, () => []);
+    assert.ok(detectors(engine).includes(`dropout:${path}`), 'its death is reported');
+  });
+
   it('learns a genuine slow-down from a steady run of long gaps', () => {
     const engine = newEngine();
     const rand = noise(9);
@@ -986,8 +1028,17 @@ describe('review of 21f6d5f: healed saves and replay counts', () => {
     const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
     const restarted = newEngine();
     restarted.importState(saved, t);
-    t = run(restarted, t, t + 2 * HOUR, 5 * SECOND, () => []);
-    assert.ok(!detectors(restarted).includes(`dropout:${path}`), 'a quiet spell after the restart is not a dropout');
+    // Judged the same with and without a restart: the import gives it no
+    // cycle limit of its own. 30 min of quiet is within the hour a slowed
+    // path is allowed; 2 h is beyond it either way.
+    const quiet = (target, minutes) => {
+      const end = run(target, t, t + minutes * MINUTE, 5 * SECOND, () => []);
+      return detectors(target).includes(`dropout:${path}`) ? end : undefined;
+    };
+    assert.equal(quiet(restarted, 30), undefined, '30 min after the restart is not a dropout');
+    assert.equal(quiet(engine, 30), undefined, '30 min without a restart is not a dropout');
+    const state = (target) => target.exportState(t).paths.find((item) => item.path === path);
+    assert.equal(state(restarted).cycleLimit, state(engine).cycleLimit, 'no cycle limit from the import');
   });
 
   it('names each distinct replay failure once', async () => {

@@ -46,10 +46,17 @@ the move is listed under **Changed**.
 
 - An operating state on a path the watch does not baseline (excluded, or
   past the cap on watched paths) is read from the source seen first too: a
-  second source's first sample no longer takes over as its primary.
+  second source's first sample no longer takes over as its primary. That
+  source keeps its sample count and interval, so a failover from a source
+  that had sent alone for long is reported, and one that reports every 30 s
+  keeps its place when a faster source appears. Other paths past the cap
+  are not compared across sources, and take no room in the tables kept for
+  skipped paths.
 - Every request's error reply body is waited for at most 2 s by the fetch
   wrapper itself, also with no timeout set and when fetch ignores the
   abort, and such a body ends as a timeout rather than as an empty reply.
+  An error body nobody reads releases the caller's abort listener when its
+  2 s are up, and a long body is read in constant memory.
 - A rule add redone after a restart that left no room, then one that did,
   is answered as stored, not "already 50 watches"; and a save the plugin
   was stopped during says what is stored (the change, or the options it
@@ -61,20 +68,32 @@ the move is listed under **Changed**.
   (iOS).
 - "Not above 95 °C", "not below 12 V" and "does not exceed" are read as
   their opposite (`atMost`, `atLeast`), in a rule and in its guard; "not
-  above" was stored as `above`.
+  above" was stored as `above`. A limit said with "should not", "must not",
+  "may not" and the other modal forms keeps its comparison, like "never" and
+  "shouldn't" ("should not exceed 14 V" is `above` 14, not `atMost`); "no
+  higher than" is `atMost` and "no lower than" `atLeast` (they were `above`
+  and `below`); and a comparison negated twice is refused.
 - An operating state (engine running, charger mode) is read from its path's
   primary source only: a second source reporting another value no longer
   flips it on every sample and keeps the paths it gates relearning.
 - A sensor whose gaps grew before it went silent for good is still reported
-  (after an hour's silence): unconfirmed long gaps no longer end its watch.
+  (after an hour's silence, or 1.5 times its longest gap): unconfirmed long
+  gaps no longer end its watch. Its regular interval is updated by regular
+  gaps only, so random gaps of 2 to 40 minutes no longer raise it until a
+  dead sensor goes unreported. Such a path no longer counts toward the data
+  feed's steady paths while it reports, so a gateway that goes down with
+  regular and raised paths behind it is reported as one silent feed at once,
+  not as separate dropouts an hour later.
 - A rule whose value or guard is edited waits its full duration again, like
-  one moved to another path.
+  one moved to another path; a "changes" rule whose guard or value is edited
+  does not report the change it already reported again.
 - A "changes" rule whose value went stale does not report the same change
   again when the value comes back.
 - A model's answer with an incomplete guard is refused instead of becoming a
   rule without one.
 - An incident kept active by one open finding keeps at most 50 findings: a
-  neighbour that clears and recurs no longer grows it without end.
+  neighbour that clears and recurs no longer grows it without end. Its title
+  still counts the findings dropped (*+120 related*, not *+49*).
 - A malformed metadata entry, or a bad value on the stream bus, is recorded
   as an error instead of costing the rest of the delta.
 - Replay releases the body of a request it could not read, and an error

@@ -12,12 +12,17 @@ const { createTimedFetch } = require('../lib/http-utils.cjs');
  * fakes do not, so without this the runner sees an idle loop and cancels the
  * test before the timeout it is exercising can fire.
  */
-async function withEventLoopAlive(run) {
+async function withEventLoopAlive(run, maxMs = 8000) {
   const keepAlive = setInterval(() => {}, 10);
+  // Never for longer than this: a run that never settles then fails its
+  // test, rather than holding the test process (and its parent) open.
+  const limit = setTimeout(() => clearInterval(keepAlive), maxMs);
+  limit.unref();
   try {
     return await run();
   } finally {
     clearInterval(keepAlive);
+    clearTimeout(limit);
   }
 }
 
@@ -85,7 +90,7 @@ describe('createTimedFetch', () => {
     assert.equal(await response.text(), 'nope');
   });
 
-  it('bounds an error reply\'s body, even with the timeout disabled, and even when fetch ignores the abort', async () => {
+  it('bounds an error reply\'s body, even with the timeout disabled, and even when fetch ignores the abort', { timeout: 10000 }, async () => {
     const { ERROR_BODY_TIMEOUT_MS } = require('../lib/http-utils.cjs');
     const timedFetch = createTimedFetch(
       async () => new Response(new ReadableStream({ pull() { return new Promise(() => {}); } }), { status: 500 }),
@@ -97,6 +102,65 @@ describe('createTimedFetch', () => {
       await assert.rejects(response.text(), (error) => error.code === 'timeout');
       assert.ok(Date.now() - started < ERROR_BODY_TIMEOUT_MS + 1000);
     });
+  });
+
+  it('leaves no abort listener on the caller signal for error replies nobody reads', { timeout: 10000 }, async () => {
+    const { getEventListeners } = require('node:events');
+    const { ERROR_BODY_TIMEOUT_MS } = require('../lib/http-utils.cjs');
+    const caller = new AbortController();
+    // A first chunk, then nothing: the stream reads ahead once and then
+    // waits for a reader that never comes.
+    const timedFetch = createTimedFetch(
+      async () =>
+        new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.enqueue(new Uint8Array([123]));
+              return new Promise(() => {});
+            }
+          }),
+          { status: 500 }
+        ),
+      0
+    );
+    await withEventLoopAlive(async () => {
+      for (let index = 0; index < 20; index += 1) await timedFetch('http://localhost:11434/api/chat', { signal: caller.signal });
+      await new Promise((resolve) => setTimeout(resolve, ERROR_BODY_TIMEOUT_MS + 500));
+    });
+    assert.equal(getEventListeners(caller.signal, 'abort').length, 0);
+  });
+
+  it('reads a long body in bounded memory', { timeout: 30000 }, async () => {
+    const v8 = require('node:v8');
+    const vm = require('node:vm');
+    v8.setFlagsFromString('--expose-gc');
+    const gc = vm.runInNewContext('gc');
+    const timedFetch = createTimedFetch(
+      async () =>
+        new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.enqueue(new Uint8Array(8));
+            }
+          }),
+          { status: 200 }
+        ),
+      600000
+    );
+    const response = await timedFetch('http://localhost:11434/api/chat');
+    const reader = response.body.getReader();
+    const read = async (count) => {
+      for (let index = 0; index < count; index += 1) await reader.read();
+    };
+    await read(10000);
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    // 100,000 chunks: one retained reaction each would be tens of megabytes.
+    await read(100000);
+    gc();
+    const grown = process.memoryUsage().heapUsed - before;
+    await reader.cancel();
+    assert.ok(grown < 8e6, `the heap grew ${(grown / 1e6).toFixed(1)} MB`);
   });
 
   it('reports a timeout rather than a bare abort', async () => {

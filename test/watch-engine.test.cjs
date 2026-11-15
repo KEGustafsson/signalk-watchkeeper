@@ -245,6 +245,62 @@ describe('CodeRabbit review of PR 1: operating states', () => {
   });
 });
 
+describe('review of 6cdfcf9..8c98cad: paths past the cap and first sources', () => {
+  it('does not compare the sources of an ordinary path past the cap on watched paths', () => {
+    const engine = newEngine({ watchMaxPaths: 10 });
+    const rand = noise(61);
+    const fill = Array.from({ length: 10 }, (_, index) => `environment.sensor${index}.temperature`);
+    const path = 'electrical.batteries.house.voltage';
+    let t = run(engine, T0, T0 + 20 * MINUTE, SECOND, () => [
+      ...fill.map((item) => [item, 290 + 0.1 * rand(), 'n2k.a']),
+      [path, 13.2 + 0.01 * rand(), 'bmv'],
+      [path, 13.2 + 0.01 * rand(), 'shunt']
+    ]);
+    // The two sources part by a volt, then the first one goes quiet.
+    t = run(engine, t, t + 2 * MINUTE, SECOND, () => [
+      ...fill.map((item) => [item, 290 + 0.1 * rand(), 'n2k.a']),
+      [path, 13.2 + 0.01 * rand(), 'bmv'],
+      [path, 12.2 + 0.01 * rand(), 'shunt']
+    ]);
+    const during = detectors(engine).filter((item) => item.endsWith(path));
+    run(engine, t, t + 2 * MINUTE, SECOND, () => [...fill.map((item) => [item, 290 + 0.1 * rand(), 'n2k.a']), [path, 12.2, 'shunt']]);
+    assert.deepEqual(during, [], 'no disagreement on a path past the cap');
+    assert.deepEqual(detectors(engine).filter((item) => item.endsWith(path)), [], 'no failover on a path past the cap');
+    assert.equal(engine.status().sourcesCompared, 0, 'it takes no room among the compared paths');
+  });
+
+  it('announces a failover from a first source that sent alone for a long time', () => {
+    const engine = newEngine({ watchExcludePaths: ['electrical.batteries.house.voltage'] });
+    const path = 'electrical.batteries.house.voltage';
+    let t = run(engine, T0, T0 + 20 * MINUTE, SECOND, () => [[path, 13.2, 'bmv']]);
+    // The first source stops just as a second one starts.
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 13.21, 'shunt']]);
+    const finding = engine.status().activeFindings.find((item) => item.detector === 'failover' && item.path === path);
+    assert.ok(finding, JSON.stringify(detectors(engine)));
+    assert.equal(finding.message, 'bmv went quiet; now reading shunt');
+  });
+
+  it('keeps a first source that reports every 30 s as primary when a faster second source arrives', () => {
+    for (const overrides of [{ watchExcludePaths: ['propulsion.main.revolutions'] }, { watchMaxPaths: 10 }]) {
+      const engine = newEngine(overrides);
+      const fill = Array.from({ length: 10 }, (_, index) => `environment.sensor${index}.temperature`);
+      const path = 'propulsion.main.revolutions';
+      let t = run(engine, T0, T0 + 20 * MINUTE, SECOND, (now) => [
+        ...fill.map((item) => [item, 290, 'n2k.a']),
+        ...((now - T0) % (30 * SECOND) === 0 ? [[path, 20, 'engine']] : [])
+      ]);
+      // A second source, every second, that says the engine is stopped.
+      run(engine, t, t + 10 * MINUTE, SECOND, (now) => [
+        ...fill.map((item) => [item, 290, 'n2k.a']),
+        ...((now - T0) % (30 * SECOND) === 0 ? [[path, 20, 'engine']] : []),
+        [path, 0, 'display']
+      ]);
+      assert.equal(engine.status().regimeChanges.length, 0, JSON.stringify(overrides));
+      assert.ok(!detectors(engine).some((item) => item.startsWith('failover:')), JSON.stringify(overrides));
+    }
+  });
+});
+
 describe('CodeRabbit review of PR 1: incidents', () => {
   it('keeps a long incident to a bounded number of findings', () => {
     const engine = newEngine();
@@ -269,6 +325,35 @@ describe('CodeRabbit review of PR 1: incidents', () => {
     const [incident] = incidents;
     assert.ok(incident.findings.length <= 50, `${incident.findings.length} findings kept`);
     assert.ok(incident.findings.some((entry) => entry.path === 'electrical.batteries.house.voltage' && entry.clearedAt === undefined), 'the open finding is kept');
+  });
+
+  it('counts the findings a long incident dropped in its title', () => {
+    const engine = newEngine();
+    engine.setRules([
+      { id: 'r-house', path: 'electrical.batteries.house.voltage', op: 'below', value: 12, forSeconds: 0, source: 'manual' },
+      { id: 'r-start', path: 'electrical.batteries.start.voltage', op: 'below', value: 12, forSeconds: 0, source: 'manual' }
+    ]);
+    let t = T0;
+    for (let cycle = 0; cycle < 120; cycle += 1) {
+      t = run(engine, t, t + 20 * SECOND, SECOND, () => [
+        ['electrical.batteries.house.voltage', 11.5],
+        ['electrical.batteries.start.voltage', 11.5]
+      ]);
+      t = run(engine, t, t + 60 * SECOND, SECOND, () => [
+        ['electrical.batteries.house.voltage', 11.5],
+        ['electrical.batteries.start.voltage', 12.8]
+      ]);
+    }
+    const [incident] = engine.status().incidents.filter((item) => item.status === 'active');
+    assert.ok(incident.findings.length <= 50, `${incident.findings.length} findings kept`);
+    // One house finding, then 120 start findings: 120 related, kept or not.
+    assert.match(incident.title, /\(\+120 related\)$/, incident.title);
+    assert.equal(incident.omitted, 121 - incident.findings.length);
+    // And it survives a restart.
+    const restored = newEngine();
+    restored.importState(JSON.parse(JSON.stringify(engine.exportState(t))), t);
+    const [saved] = restored.status().incidents;
+    assert.match(saved.title, /\(\+120 related\)$/, saved.title);
   });
 });
 

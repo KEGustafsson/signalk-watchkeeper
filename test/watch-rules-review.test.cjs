@@ -265,6 +265,66 @@ describe('CodeRabbit review of PR 1: negated comparisons', () => {
     assert.equal(guarded.rule.op, 'above');
     assert.equal(guarded.rule.when.op, 'atMost');
   });
+
+  it('reads a limit said with "should not", "must not" and the like as the limit, like "never"', () => {
+    const cases = [
+      ['battery voltage should not exceed 14 V', 'above'],
+      ['battery voltage must not go above 14 V', 'above'],
+      ['battery voltage may not rise above 14 V', 'above'],
+      ['battery voltage shall not be below 12 V', 'below'],
+      ['battery voltage can not drop below 12 V', 'below'],
+      ['battery voltage could not fall below 12 V', 'below'],
+      ['battery voltage will not exceed 14 V', 'above'],
+      ['battery voltage would not go above 14 V', 'above'],
+      ["battery voltage shouldn't exceed 14 V", 'above'],
+      ["battery voltage mustn't fall below 12 V", 'below'],
+      ["battery voltage won't drop below 12 V", 'below'],
+      ['battery voltage cannot exceed 14 V', 'above'],
+      ['battery voltage never goes above 14 V', 'above'],
+      // A description of the reading, not of a limit: still its opposite.
+      ["battery voltage doesn't fall below 12 V", 'atLeast'],
+      ['battery voltage does not exceed 14 V', 'atMost']
+    ];
+    for (const [text, op] of cases) {
+      const result = parseRule(text, VESSEL);
+      assert.equal(result.ok, true, text);
+      assert.equal(result.rule.path, 'electrical.batteries.house.voltage', text);
+      assert.equal(result.rule.op, op, text);
+    }
+    const guarded = parseRule('coolant above 95 °C while the engine revolutions should not drop below 600 rpm', VESSEL);
+    assert.equal(guarded.rule.when.op, 'below');
+  });
+
+  it('reads "no higher than" as at most and "no lower than" as at least', () => {
+    const cases = [
+      ['battery voltage no higher than 14 V', 'atMost'],
+      ['battery voltage is no higher than 14 V', 'atMost'],
+      ['battery voltage no greater than 14 V', 'atMost'],
+      ['battery voltage not higher than 14 V', 'atMost'],
+      ['battery voltage no lower than 12 V', 'atLeast'],
+      ['battery voltage is no lower than 12 V', 'atLeast'],
+      ['battery voltage not lower than 12 V', 'atLeast']
+    ];
+    for (const [text, op] of cases) {
+      const result = parseRule(text, VESSEL);
+      assert.equal(result.ok, true, text);
+      assert.equal(result.rule.path, 'electrical.batteries.house.voltage', text);
+      assert.equal(result.rule.op, op, text);
+    }
+  });
+
+  it('refuses a comparison negated twice, rather than reading it either way', () => {
+    for (const text of [
+      'coolant is not not above 95 °C',
+      'coolant not not above 95 °C',
+      'battery voltage should not not exceed 14 V',
+      "battery voltage doesn't not fall below 12 V"
+    ]) {
+      const result = parseRule(text, VESSEL);
+      assert.equal(result.ok, false, text);
+      assert.match(result.reason, /negates the comparison twice/, text);
+    }
+  });
 });
 
 describe('CodeRabbit review of PR 1: stale values', () => {
@@ -940,6 +1000,26 @@ describe('CodeRabbit review of b103610..014985f, and the review of 014985f: rule
       engine.tick(t);
     }
     assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 1);
+  });
+
+  it('does not report a change twice when the guard of its rule is edited', () => {
+    const engine = newEngine();
+    const pump = 'electrical.switches.bilgePump.state';
+    const rpm = 'propulsion.main.revolutions';
+    const rule = (value) => ({ id: 'r-pump', path: pump, op: 'changes', forSeconds: 0, when: { path: rpm, op: 'above', value }, source: 'manual' });
+    engine.setRules([rule(5)]);
+    let t = T0;
+    const feed = (state) => {
+      engine.ingest(pump, state, t);
+      engine.ingest(rpm, 20, t);
+      engine.tick(t);
+    };
+    for (; t < T0 + 30 * SECOND; t += 5 * SECOND) feed(false);
+    for (; t < T0 + 60 * SECOND; t += 5 * SECOND) feed(true);
+    assert.equal(engine.stats().byDetector.rule, 1, 'the change is reported once');
+    engine.setRules([rule(6)]);
+    for (; t < T0 + 3 * MINUTE; t += 5 * SECOND) feed(true);
+    assert.equal(engine.stats().byDetector.rule, 1, 'and not again after the guard is edited');
   });
 
   it('makes an edited rule wait its full duration on its new path', () => {

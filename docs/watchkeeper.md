@@ -142,7 +142,9 @@ standard Signal K path or a plugin's own.
   it says what is missing, for example "needs navigation.speedThroughWater".
 
 At most `watchMaxPaths` paths (default 1500) are watched. Paths beyond that are
-counted, not watched.
+counted, not watched, and their sources are not compared; an operating-state
+path past the cap is still read from its first source only (see
+[Operating states](#operating-states)).
 
 ## Per-path learning
 
@@ -151,7 +153,7 @@ Each watched path keeps a small, serialisable state object
 
 | Learned | How |
 | --- | --- |
-| Update interval | Moving average of the time between accepted samples. A gap long enough to be a dropout (`max(30 s, 10 × usual interval)`) is an outage. One that follows regular samples is left out of the interval, so one hour of silence does not stretch a 30 s sensor's interval past the regularity limit and hide its next outage, and a sensor that fails again and again has every outage reported. Long gaps one right after another - a sender that reports on change, or goes quiet at night - are its rhythm and count, each up to that limit, so it is not reported at every gap of the night. A path that was regular before such a run stays watched while the run is unconfirmed, but only for a silence of an hour or more: a sensor whose gaps grew and that then went silent for good is still reported. Eight long gaps in a row, each within half of the run's mean, are taken as the new interval at once. So is a repeating cycle: eight outages of about one size, each after a burst of at most 30 samples - a pair of readings every five minutes - make the cycle's mean gap the interval. A path that has settled (more than 30 regular gaps in a row) needs 24 such outages: until then they are a sensor failing, however regular, and each is reported. Once a cycle is learned, the dropout limit is at least twice its longest outage, whatever the mean gap: a burst sender (ten readings a second apart, then five minutes quiet) is not reported at each quiet spell, and a sensor that fails in a rhythm and then dies is reported (a dismissal lengthens that limit too). A settled regular stretch - more than 30 gaps in a row short enough for a regular path - clears the learned cycle, and so does a plain slower rate (eight long gaps in a row); a slow cycle's own five-minute gaps never do. A restart gives a saved settled path a cycle limit back only if its outages were silences well beyond its interval (more than 1.5 times it), not a sensor that merely slowed down. While it reports, such a path does not count toward the data feed's steady paths; once its dropout is active it counts, regular and silent, so a gateway taking it down with the rest is one silent feed |
+| Update interval | Moving average of the time between accepted samples. A gap long enough to be a dropout (`max(30 s, 10 × usual interval)`) is an outage. One that follows regular samples is left out of the interval, so one hour of silence does not stretch a 30 s sensor's interval past the regularity limit and hide its next outage, and a sensor that fails again and again has every outage reported. Long gaps one right after another - a sender that reports on change, or goes quiet at night - are its rhythm and count, each up to that limit, so it is not reported at every gap of the night. The interval it was regular at is the one it is judged by afterwards, as only a regular gap (no longer than a regular path's limit) updates it. A path that was regular before such a run stays watched while the run is unconfirmed, but only for a silence of an hour or more, or 1.5 times the longest gap it has come back from when that is longer: a sensor whose gaps grew and that then went silent for good is still reported, and one that reports on change, at night up to two hours apart, is not reported at each of its gaps. Such a raised path, like one with a learned cycle, does not count toward the data feed's steady paths until its dropout is active, so a gateway that takes down six steady paths and eight raised ones is one silent feed. Eight long gaps in a row, each within half of the run's mean, are taken as the new interval at once. So is a repeating cycle: eight outages of about one size, each after a burst of at most 30 samples - a pair of readings every five minutes - make the cycle's mean gap the interval. A path that has settled (more than 30 regular gaps in a row) needs 24 such outages: until then they are a sensor failing, however regular, and each is reported. Once a cycle is learned, the dropout limit is at least twice its longest outage, whatever the mean gap: a burst sender (ten readings a second apart, then five minutes quiet) is not reported at each quiet spell, and a sensor that fails in a rhythm and then dies is reported (a dismissal lengthens that limit too). A settled regular stretch - more than 30 gaps in a row short enough for a regular path - clears the learned cycle, and so does a plain slower rate (eight long gaps in a row); a slow cycle's own five-minute gaps never do. A restart gives a saved settled path a cycle limit back only if its outages were silences well beyond its interval (more than 1.5 times it), not a sensor that merely slowed down. While it reports, such a path does not count toward the data feed's steady paths; once its dropout is active it counts, regular and silent, so a gateway taking it down with the rest is one silent feed |
 | Baseline mean and spread | Exponentially weighted, half-life **30 min**, time-based so "30 minutes" means 30 minutes at any update rate. While a path is learning, the weight is at least `1/n`, so the first minutes are a plain average |
 | Fast average | Exponentially weighted, half-life **8 s**, used to compare against the baseline. A one-sample spike barely moves it |
 | Sensor resolution | The smallest non-zero step seen three times (within 10 %) among the last 8 steps, where a step that goes straight back the way the one before it came counts once with it. The noise floor is at least twice it, but no more than the coarsest real senders of the unit allow (16 kPa for pressure, ten times the unit's floor otherwise, so 0.05 for a tank: one eighth step stays quiet and full to empty is still reported; 5 % of the value without a unit, but never less than two counts on a whole-number path). A single step, or a glitch out and straight back followed by a real drop of the same size, is not evidence of resolution: a tank that sat at 80 % and dropped to 20 % would otherwise have learned a 60-point resolution and hidden its own drop |
@@ -302,7 +304,12 @@ a calibration offset look like noise, or a step at every switch.
 
 This runs on skipped paths too: two compasses disagreeing is news even though
 heading itself is expected to swing. Up to 8 sources per path, and up to 500
-skipped paths with more than one source.
+skipped paths with more than one source. The source a skipped path was heard
+from first stays its primary when a second source appears, with its sample
+count and its interval: a failover from a source that had sent alone for an
+hour is reported, and one that reports every 30 s is not replaced 10 s after
+its last sample. A skipped path's interval is its primary's, as a watched
+path's is. Paths past `watchMaxPaths` are not compared.
 
 ## Operating states
 
@@ -344,8 +351,10 @@ does not drop back.
 in the same system (the first two path segments, for example
 `propulsion.main`), or if it starts within 3 minutes of the incident's last new
 finding. GNSS findings only ever group with GNSS findings. Findings are listed
-in the order they started, so the first one is labelled *first sign*. The last
-50 incidents are kept.
+in the order they started, so the first one is labelled *first sign*. An
+incident keeps at most 50 findings: past that its oldest cleared ones are
+dropped, and its title (*… (+N related)*) still counts them. The last 50
+incidents are kept.
 
 **Notifications.** Each watched path gets one notification carrying its worst
 open finding, plus one each for GNSS, the data feed and each rule:
@@ -397,7 +406,14 @@ A rule is stored data, checked deterministically on every tick:
 
 - A negated comparison is its opposite, inclusive: "not above 95" is
   `atMost` 95, "not below 12" `atLeast` 12, "does not exceed" `atMost`, in a
-  rule and in its guard.
+  rule and in its guard. "No higher than 14" is `atMost` 14 and "no lower
+  than 12" `atLeast` 12.
+- A limit is not negated: "should not exceed 14 V", "must not go above 95",
+  "can't drop below 12" and the other modal forms (should, must, may, shall,
+  can, could, will, would, and their contractions) read like "never above":
+  the watch fires when the limit is crossed, `above` 14, `below` 12.
+- A comparison negated twice ("is not not above 95") is refused rather than
+  read either way.
 - `op` is one of `above`, `below`, `atLeast`, `atMost` (numbers; `atLeast`
   and `atMost` are the inclusive `>=` and `<=`, so "at least 12 V" holds at
   exactly 12 V), `equals`, `notEquals` or `changes`.
@@ -427,7 +443,8 @@ A rule is stored data, checked deterministically on every tick:
   whose path, operator, value or guard is edited: the new condition has to
   hold for the full duration itself, and a finding it had open closes.
 - A "changes" rule whose value goes stale closes its finding, and a change it
-  already reported is not reported again when the value is heard from.
+  already reported is not reported again when the value is heard from, nor
+  when the rule's value or guard is edited.
 - At most 50 rules. They are stored in the plugin's options as `watchRules`.
   A rule added or saved through the routes is checked like a compiled one (a
   word or on/off on a measurement is refused); a rule already stored as it
