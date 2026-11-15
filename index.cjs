@@ -1,0 +1,706 @@
+'use strict';
+
+const {
+  DEFAULT_HISTORY_TIMEOUT_MS,
+  authHeadersFromRequest,
+  normalizeHistoryConfig
+} = require('./lib/history-service.cjs');
+const { createWatchService } = require('./lib/watch-service.cjs');
+const { MAX_RULES, hasValidId, normalizeRules } = require('./lib/watch/rules.cjs');
+
+const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+
+function badRequest(message) {
+  const error = new Error(message);
+  error.code = 'validation-failed';
+  return error;
+}
+
+/** A route's JSON body: the parsed body Express left, or the raw stream read and parsed. */
+async function readJsonBody(req) {
+  if (req && typeof req.body === 'object' && req.body !== null) {
+    return req.body;
+  }
+  if (!req || typeof req[Symbol.asyncIterator] !== 'function') {
+    throw badRequest('Request body must be JSON.');
+  }
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > MAX_REQUEST_BODY_BYTES) {
+      throw badRequest('Request body is too large.');
+    }
+    chunks.push(buffer);
+  }
+  const rawBody = Buffer.concat(chunks).toString('utf8').trim();
+  if (rawBody.length === 0) {
+    return {};
+  }
+  try {
+    return JSON.parse(rawBody);
+  } catch {
+    throw badRequest('Request body is not valid JSON.');
+  }
+}
+
+module.exports = function createPlugin(app, dependencies = {}) {
+  let pluginOptions = {};
+  let routesRegistered = false;
+  // Express has no public API for unmounting a subrouter, and signalk-server
+  // calls registerWithRouter unconditionally - outside its `if (enabled)` guard
+  // - so gating a stopped plugin is the plugin's own job.
+  let running = false;
+  // Bumped on every start/stop, so a save that finishes after a restart can
+  // tell its options are no longer the running ones.
+  let lifecycleGeneration = 0;
+  const watchService = createWatchService(app, { ...dependencies, pluginId: 'signalk-watchkeeper' });
+
+  const getConfig = () => normalizeHistoryConfig(pluginOptions);
+
+  const schema = () => ({
+    type: 'object',
+    properties: {
+      watchEnabled: {
+        type: 'boolean',
+        title: 'Watch all Signal K paths',
+        description:
+          'Learn how every self-vessel path normally behaves and raise a Signal K notification when one departs from ' +
+          'it: a sustained jump or ramp, a sensor that stops updating or freezes, a state never seen before, a pump ' +
+          'cycling more than usual, a tank or battery trending toward its limit, or a GNSS fix that dead reckoning and ' +
+          'the other receivers do not corroborate. Uses no language model - it runs on the CPU in microseconds per ' +
+          'update. Experimental: not a substitute for real alarms.',
+        default: false
+      },
+      watchSensitivity: {
+        type: 'string',
+        title: 'Watch sensitivity',
+        description:
+          'How far from normal a value must move before it is reported. Start at normal; use the panel\'s replay to see what a setting would have raised over the last day before changing it.',
+        enum: ['low', 'normal', 'high'],
+        default: 'normal'
+      },
+      watchLearningMinutes: {
+        type: 'integer',
+        title: 'Watch learning period (minutes)',
+        description:
+          'How long a newly seen path is observed before it can raise anything. The learned baseline is saved, so this is paid once, not after every restart.',
+        default: 30,
+        minimum: 1,
+        maximum: 1440
+      },
+      watchNotifications: {
+        type: 'boolean',
+        title: 'Publish watch findings as Signal K notifications',
+        description:
+          'Under notifications.watchkeeper.*, at warn or alert - never alarm or emergency, which belong to real alarm sources.',
+        default: true
+      },
+      watchSound: {
+        type: 'boolean',
+        title: 'Ask for sound on watch alerts',
+        description: 'Adds "sound" to the notification method for alert-level findings. Warnings are always visual only.',
+        default: false
+      },
+      watchDefaultExclusions: {
+        type: 'boolean',
+        title: 'Skip paths that change with the helm, wind and seabed',
+        description:
+          'Heading, course, speed, attitude, wind, depth, steering and similar paths change quickly by their nature, so the watch skips them by default. Position and fix quality are still read, by the GNSS integrity check.',
+        default: true
+      },
+      watchExcludePaths: {
+        type: 'array',
+        title: 'Also skip these paths',
+        description:
+          'Signal K paths or patterns: a path covers everything beneath it, * matches within one segment, ** across segments (for example environment.inside, propulsion.*.exhaustTemperature, **.signalStrength).',
+        items: { type: 'string' },
+        default: []
+      },
+      watchCounterPaths: {
+        type: 'array',
+        title: 'Counters under other names',
+        description:
+          'Paths that only count up - engine hours, energy, pulses - which the watch does not judge as levels or stuck sensors. ' +
+          'Standard names (runTime, fuel.used, lifetimeDischarge, energy..., log, ...Today and the like) are recognised already; ' +
+          'list a plugin\'s own counters here. A pattern (as above) covers the paths beneath it, except measurements such as ' +
+          'a voltage or a level; list a path exactly to make it a counter regardless.',
+        items: { type: 'string' },
+        default: []
+      },
+      ollamaUrl: {
+        type: 'string',
+        title: 'Ollama server for reading rules',
+        description:
+          'Watch rules written in plain words ("tell me if the coolant goes above 95 for 2 minutes") are read by a parser first, ' +
+          'with no model. A request the parser cannot read can be passed to a small model on this Ollama server, which picks ' +
+          'from a short list of real paths with its answer held to a fixed format; every result is read back for you to confirm.',
+        default: 'http://localhost:11434'
+      },
+      ruleAssistModel: {
+        type: 'string',
+        title: 'Model for reading rules',
+        description:
+          'A small Ollama model such as qwen3:0.6b or gemma3:1b. Leave blank to use the parser only. The model is unloaded two minutes after use so it does not hold GPU memory.',
+        default: ''
+      },
+      watchMaxPaths: {
+        type: 'integer',
+        title: 'Most paths to watch',
+        description: 'A bound on memory and CPU. Paths beyond it are counted in the panel but not watched.',
+        default: 1500,
+        minimum: 10,
+        maximum: 10000
+      },
+      historyServerUrl: {
+        type: 'string',
+        title: 'Signal K server URL for replay (optional)',
+        description:
+          'Where to reach the History API that the replay reads. Leave blank to call this server on localhost. Set it for history served by another Signal K instance (with its own History API key). With TLS on, leave it blank and start Signal K with NODE_EXTRA_CA_CERTS set to ssl-cert.pem in its configuration directory, so its own certificate verifies on localhost.',
+        default: ''
+      },
+      historyApiKey: {
+        type: 'string',
+        title: 'History API key (servers other than this one)',
+        description:
+          'Bearer token for a history server that is not this Signal K server: another host, or another service on this machine at a different port. The operator\'s own session is forwarded only to this server (a loopback address on the port it listens on) — a cookie minted here is replayable against another Signal K instance, so anything else is never sent it and needs a credential issued for itself. Leave blank for this server\'s own history, or for an unauthenticated one.',
+        default: ''
+      },
+      historyProvider: {
+        type: 'string',
+        title: 'History provider (optional)',
+        description:
+          'Plugin id of a specific history provider, for example signalk-parquet. Leave blank to use the server default.',
+        default: ''
+      },
+      historyTimeoutMs: {
+        type: 'integer',
+        title: 'History request timeout (ms)',
+        description: 'How long one History API request of a replay may take. A replay waits at least 30 s per request whatever this says.',
+        default: DEFAULT_HISTORY_TIMEOUT_MS,
+        minimum: 0,
+        maximum: 120000
+      }
+    }
+  });
+
+  /**
+   * HTTP status for an error code.
+   *
+   * One place for code -> HTTP. `fallback` is the status for a code nothing
+   * here maps.
+   */
+  const statusForCode = (code, fallback = 502) => {
+    switch (code) {
+      case 'validation-failed':
+        return 400;
+      case 'unauthorized':
+        return 401;
+      // The request was valid but the stored state it refers to has moved on
+      // (a path another save removed, a list that is not stored at all).
+      case 'conflict':
+        return 409;
+      case 'disabled':
+        return 503;
+      case 'timeout':
+        return 504;
+      default:
+        return fallback;
+    }
+  };
+
+  /** The error code for a route's error body, from whatever was thrown. */
+  const errorCode = (error) =>
+    typeof error === 'object' && error !== null && typeof error.code === 'string' ? error.code : 'unknown';
+
+  /** The message for a route's error body; `fallback` when nothing usable was thrown. */
+  const errorMessage = (error, fallback) => (error instanceof Error ? error.message : fallback);
+
+  /**
+   * Answer a failed route. A thrown error that carries its own HTTP status
+   * (a backend's 404, say) keeps it; anything else is mapped from its code.
+   */
+  const sendError = (res, error, fallbackStatus, fallbackMessage) => {
+    const statusCode =
+      typeof error === 'object' && error !== null && typeof error.statusCode === 'number'
+        ? error.statusCode
+        : statusForCode(errorCode(error), fallbackStatus);
+
+    res.status(statusCode).json({
+      error: { code: errorCode(error), message: errorMessage(error, fallbackMessage) }
+    });
+  };
+
+  // A stopped plugin serves nothing. Returns true when the request was
+  // answered with 503 and the caller should stop.
+  const rejectIfStopped = (res) => {
+    if (running) {
+      return false;
+    }
+    res.status(503).json({
+      error: { code: 'disabled', message: 'Watchkeeper is stopped.' }
+    });
+    return true;
+  };
+
+  /**
+   * May this request change what the watch does (mute, feedback, rules,
+   * replay)?
+   *
+   * On a server with security enabled that means an authenticated principal
+   * with more than read access; on a server with security off - a single-user
+   * boat network, which is the common Signal K setup - there is no identity to
+   * check and the route is as open as the rest of the server already is.
+   */
+  const isWriteAllowed = (req) => {
+    const strategy = app && app.securityStrategy;
+    if (!strategy || (typeof strategy.isDummy === 'function' && strategy.isDummy())) {
+      return true;
+    }
+
+    const principal = req && req.skPrincipal;
+    if (principal) {
+      const permissions = String(principal.permissions || '').toLowerCase();
+      return permissions === 'admin' || permissions === 'readwrite';
+    }
+
+    // Older strategies expose the session only through getLoginStatus.
+    if (typeof strategy.getLoginStatus === 'function') {
+      try {
+        const status = strategy.getLoginStatus(req) || {};
+        return status.status === 'loggedIn' && status.readOnlyAccess !== true;
+      } catch {
+        return false;
+      }
+    }
+
+    return false;
+  };
+
+  // Every write to the stored options goes through this one queue. Each
+  // handler used to copy pluginOptions, await the save, then assign its copy
+  // back - so two overlapping saves (two watch rules, say) both started from the same options and the later one silently undid the
+  // earlier, while both reported success.
+  let optionsWriteQueue = Promise.resolve();
+
+  /**
+   * Read-modify-save the plugin's options, one at a time. `change` gets the
+   * options as they are once every earlier save has finished and returns the
+   * new options; they are stored, then applied to the running plugin.
+   * Returning the options it was given unchanged (the same object) means
+   * "nothing to change": nothing is written, so a no-op neither rewrites the
+   * stored settings nor fails on a host that cannot store them.
+   */
+  const updatePluginOptions = (change) => {
+    const run = optionsWriteQueue.then(async () => {
+      // A restart while a save is in flight replaces pluginOptions with the
+      // options the server started with. The change is then made again on
+      // those and saved again, so neither memory nor disk keeps an older copy
+      // - and a save queued while the plugin was stopped (pluginOptions is {}
+      // then) writes nothing at all instead of storing just its own change.
+      let wrote = false;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (!running) {
+          const error = new Error(
+            wrote
+              ? 'The change was written, but the plugin stopped before it took effect; if the settings were saved meanwhile (from the admin page, say), they may have replaced it.'
+              : 'The plugin is stopped; nothing was saved.'
+          );
+          error.code = 'disabled';
+          error.statusCode = 503;
+          throw error;
+        }
+        const generation = lifecycleGeneration;
+        const updated = change(pluginOptions);
+        if (updated === pluginOptions) {
+          // Redone after a restart and nothing to change now - but the first
+          // attempt already stored a copy made from the older options: put
+          // the restart's options back on disk.
+          if (wrote) {
+            await new Promise((resolve, reject) => {
+              app.savePluginOptions(pluginOptions, (error) => (error ? reject(error) : resolve()));
+            });
+            // Restarted again while that was written: start over on the
+            // newest options, so disk ends with what the plugin runs.
+            if (generation !== lifecycleGeneration) continue;
+          }
+          return updated;
+        }
+        if (typeof app.savePluginOptions !== 'function') {
+          const error = new Error('This Signal K server does not let plugins store their own settings.');
+          error.code = 'unknown';
+          error.statusCode = 501;
+          throw error;
+        }
+        await new Promise((resolve, reject) => {
+          app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
+        });
+        wrote = true;
+        if (generation === lifecycleGeneration) {
+          pluginOptions = updated;
+          return updated;
+        }
+      }
+      const error = new Error('The plugin kept restarting while saving; the stored settings may hold this change. Check them and try again.');
+      error.code = 'conflict';
+      error.statusCode = 409;
+      throw error;
+    });
+    // A failed save must not wedge the queue for the next one.
+    optionsWriteQueue = run.catch(() => {});
+    return run;
+  };
+
+  /** GET /watch/status: what the watch has learned and what it has found. */
+  const watchStatusHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      res.status(200).json(watchService.status());
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
+  /** GET /watch/series?path=…: the learned series behind a finding, for the panel's sparkline. */
+  const watchSeriesHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      // Express parses the query string; a bare Node request (the preview
+      // host, some test harnesses) only has the URL.
+      let path = req && req.query && typeof req.query.path === 'string' ? req.query.path : '';
+      if (!path && req && typeof req.url === 'string') {
+        path = new URL(req.url, 'http://localhost').searchParams.get('path') || '';
+      }
+      const series = watchService.series(path);
+      if (!series) {
+        res.status(404).json({ error: { code: 'not-found', message: `The watch has no series for ${path}.` } });
+        return;
+      }
+      res.status(200).json(series);
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
+  /**
+   * GET /watch/inventory: every path the watch has found on this vessel, what
+   * it does with each, and which checks this vessel's data supports.
+   */
+  const watchInventoryHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      res.status(200).json(watchService.inventory());
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
+  /** GET /watch/unusual: the paths furthest from their own normal right now, alarming or not. */
+  const watchUnusualHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      res.status(200).json(watchService.unusual());
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
+  /** GET /watch/report?hours=24: what the watch saw, as facts and plain lines. */
+  const watchReportHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      let hours = req && req.query ? req.query.hours : undefined;
+      if (hours === undefined && req && typeof req.url === 'string') {
+        hours = new URL(req.url, 'http://localhost').searchParams.get('hours') || undefined;
+      }
+      res.status(200).json(watchService.report(Number(hours) || 24));
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
+  const rejectUnlessWriter = (req, res, action) => {
+    if (isWriteAllowed(req)) {
+      return false;
+    }
+    res.status(401).json({
+      error: { code: 'unauthorized', message: `${action} requires a Signal K login with write access.` }
+    });
+    return true;
+  };
+
+  /** POST /watch/mute { path, minutes } and /watch/unmute { path }. */
+  const watchMuteHandler = (unmute) => async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Muting a watched path')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const mutes = unmute
+        ? watchService.unmute(body && body.path)
+        : watchService.mute(body && body.path, body && body.minutes);
+      res.status(200).json({ mutes });
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
+  /**
+   * POST /watch/feedback { path, useful }: "not useful" (false) makes the path
+   * need a bigger departure before it is reported again; true undoes one
+   * dismissal; "reset" forgets them all.
+   */
+  const watchFeedbackHandler = async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Giving watch feedback')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      res.status(200).json(watchService.feedback(body && body.path, body && body.useful));
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
+  /**
+   * POST /watch/replay { duration? }: run a fresh watch over recorded history
+   * and report what it would have raised. Read-only, but it is the heaviest
+   * thing this plugin does, so it is a writer's action.
+   */
+  const watchReplayHandler = async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Replaying history through the watch')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const result = await watchService.replay(body || {}, getConfig(), { authHeaders: authHeadersFromRequest(req) });
+      res.status(200).json(result);
+    } catch (error) {
+      if (errorCode(error) === 'busy') {
+        res.status(409).json({ error: { code: 'busy', message: errorMessage(error, 'Busy.') } });
+        return;
+      }
+      sendError(res, error, 500, 'Unknown replay failure.');
+    }
+  };
+
+  /** POST /watch/rules/compile { text, path? }: read a request back as a rule, without storing it. */
+  const watchRuleCompileHandler = async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Writing a watch rule')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      res.status(200).json(await watchService.compileRule(body || {}));
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
+  /**
+   * Change the stored watch rules. Stored as plugin options, so a restart and a config backup carry them. `change` gets
+   * the rules as stored when its turn in the write queue comes, so edits from
+   * two panels, or two quick clicks, apply to each other's result instead of
+   * one overwriting the other from a stale list.
+   */
+  const changeWatchRules = async (change) => {
+    let rules;
+    let generation;
+    await updatePluginOptions((current) => {
+      generation = lifecycleGeneration;
+      const before = normalizeRules(current.watchRules);
+      rules = normalizeRules(change(before));
+      // Nothing changed (a refused add, an unknown id): write nothing, so a
+      // no-op neither rewrites the settings nor fails on a host that cannot
+      // store them.
+      if (JSON.stringify(rules) === JSON.stringify(before)) {
+        return current;
+      }
+      return { ...current, watchRules: rules };
+    });
+    // Restarted meanwhile: the new start already loaded the stored rules.
+    return generation === lifecycleGeneration ? watchService.setRules(rules) : rules;
+  };
+
+  /** POST /watch/rules/add { rule }: add one rule (or replace the one with its id). */
+  const watchRuleAddHandler = async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Changing watch rules')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const [rule] = normalizeRules([body && body.rule]);
+      if (!rule) {
+        res.status(400).json({ error: { code: 'validation-failed', message: 'Send one valid rule as "rule".' } });
+        return;
+      }
+      // A rule already stored as it is (re-added unchanged) is not judged
+      // again: it was accepted once, and refusing it now would lock it in.
+      const unchanged = normalizeRules(pluginOptions.watchRules).some(
+        (stored) => stored.id === rule.id && JSON.stringify(stored) === JSON.stringify(rule)
+      );
+      const problem = unchanged ? undefined : watchService.checkRule(rule);
+      if (problem) {
+        res.status(400).json({ error: { code: 'validation-failed', message: problem } });
+        return;
+      }
+      let full = false;
+      // A rule that came without an id is a new rule: if its derived id is
+      // already taken by a different stored rule, it is numbered as a copy
+      // rather than replacing that one.
+      const fresh = !hasValidId(body.rule);
+      // What a rule says, without when it was made or what it is called.
+      const content = ({ id, createdAt, ...rest }) => JSON.stringify(rest);
+      const base = rule.id;
+      const rules = await changeWatchRules((current) => {
+        // Numbered afresh on each attempt (a save redone after a restart
+        // starts again from the derived id).
+        if (fresh) {
+          rule.id = base;
+          for (let copy = 2; current.some((item) => item.id === rule.id && content(item) !== content(rule)); copy += 1) {
+            rule.id = `${base.slice(0, 36)}-${copy}`;
+          }
+        }
+        const others = current.filter((item) => item.id !== rule.id);
+        // At the cap, the new rule is the one truncation would drop: refuse
+        // instead of reporting success for a rule that was never stored.
+        if (others.length >= MAX_RULES) {
+          full = true;
+          return current;
+        }
+        return [...others, rule];
+      });
+      if (full) {
+        res.status(statusForCode('conflict')).json({
+          error: { code: 'conflict', message: `There are already ${MAX_RULES} watches; remove one first.` }
+        });
+        return;
+      }
+      res.status(200).json({ rules });
+    } catch (error) {
+      sendError(res, error, 500, 'Could not save the watch rules.');
+    }
+  };
+
+  /** POST /watch/rules/remove { id }: remove one rule by id. */
+  const watchRuleRemoveHandler = async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Changing watch rules')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const id = body && typeof body.id === 'string' ? body.id : '';
+      if (!id) {
+        res.status(400).json({ error: { code: 'validation-failed', message: 'Send the id of the rule to remove.' } });
+        return;
+      }
+      let found = false;
+      const rules = await changeWatchRules((current) => {
+        // Once found, found: a redo after a restart sees the list it wrote.
+        found = found || current.some((item) => item.id === id);
+        return current.filter((item) => item.id !== id);
+      });
+      // An id that is not stored (a panel open across an upgrade that changed
+      // derived ids, say) is not reported as removed.
+      if (!found) {
+        res.status(404).json({ error: { code: 'not-found', message: 'No watch with that id is stored; reload the list.' }, rules });
+        return;
+      }
+      res.status(200).json({ rules });
+    } catch (error) {
+      sendError(res, error, 500, 'Could not save the watch rules.');
+    }
+  };
+
+  /** POST /watch/rules/save { rules }: replace the whole list, for tools that manage it as a unit. */
+  const watchRuleSaveHandler = async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Changing watch rules')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      if (!body || !Array.isArray(body.rules)) {
+        res.status(400).json({ error: { code: 'validation-failed', message: 'Send rules as an array.' } });
+        return;
+      }
+      // Only rules that are new or changed are judged: one stored before the
+      // check existed, or whose path is quiet now, must not lock a tool out
+      // of saving the rest of the list.
+      const stored = new Map(normalizeRules(pluginOptions.watchRules).map((rule) => [rule.id, JSON.stringify(rule)]));
+      const problem = normalizeRules(body.rules)
+        .filter((rule) => stored.get(rule.id) !== JSON.stringify(rule))
+        .map((rule) => watchService.checkRule(rule))
+        .find(Boolean);
+      if (problem) {
+        res.status(400).json({ error: { code: 'validation-failed', message: problem } });
+        return;
+      }
+      const rules = await changeWatchRules(() => body.rules);
+      res.status(200).json({ rules });
+    } catch (error) {
+      sendError(res, error, 500, 'Could not save the watch rules.');
+    }
+  };
+
+  // Without this the admin UI renders the key as an ordinary text input, so
+  // the token is on screen in cleartext and echoed back on every page load.
+  const uiSchema = () => ({
+    historyApiKey: { 'ui:widget': 'password' }
+  });
+
+  return {
+    id: 'signalk-watchkeeper',
+    name: 'Watchkeeper',
+    description: 'A background watch of every Signal K path: learns what is normal and raises notifications when a path departs from it.',
+    schema,
+    uiSchema,
+    start: (options = {}) => {
+      pluginOptions = options;
+      running = true;
+      lifecycleGeneration += 1;
+      watchService.start(options);
+      if (typeof app.setPluginStatus === 'function') {
+        app.setPluginStatus(options.watchEnabled === true ? 'Watchkeeper is watching.' : 'Watchkeeper is off; enable the watch in its settings.');
+      }
+    },
+    registerWithRouter: (router) => {
+      if (routesRegistered) {
+        return;
+      }
+      router.get('/watch/status', watchStatusHandler);
+      router.get('/watch/series', watchSeriesHandler);
+      router.get('/watch/inventory', watchInventoryHandler);
+      router.get('/watch/unusual', watchUnusualHandler);
+      router.post('/watch/rules/compile', watchRuleCompileHandler);
+      router.post('/watch/rules/save', watchRuleSaveHandler);
+      router.post('/watch/rules/add', watchRuleAddHandler);
+      router.post('/watch/rules/remove', watchRuleRemoveHandler);
+      router.get('/watch/report', watchReportHandler);
+      router.post('/watch/feedback', watchFeedbackHandler);
+      router.post('/watch/mute', watchMuteHandler(false));
+      router.post('/watch/unmute', watchMuteHandler(true));
+      router.post('/watch/replay', watchReplayHandler);
+      routesRegistered = true;
+    },
+    stop: () => {
+      lifecycleGeneration += 1;
+      if (typeof app.setPluginStatus === 'function') {
+        app.setPluginStatus('Watchkeeper stopped.');
+      }
+      watchService.stop();
+      pluginOptions = {};
+      running = false;
+    }
+  };
+};
