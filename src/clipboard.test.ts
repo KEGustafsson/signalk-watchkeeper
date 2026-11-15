@@ -63,4 +63,24 @@ describe('copyText', () => {
     }
     assert.equal(await copyText('x', { clipboard: null, document: null }), 'refused');
   });
+
+  it('selects the whole text for iOS, and gives the focus back', async () => {
+    const ranges: Array<[number, number]> = [];
+    let focused = 0;
+    const doc: DocumentLike = {
+      createElement: () => ({
+        value: '',
+        style: { position: '', top: '', left: '', opacity: '' },
+        setAttribute() {},
+        select() {},
+        setSelectionRange: (start: number, end: number) => void ranges.push([start, end])
+      }),
+      body: { appendChild: () => undefined, removeChild: () => undefined },
+      execCommand: () => true,
+      activeElement: { focus: () => void (focused += 1) }
+    };
+    assert.equal(await copyText('twelve chars', { clipboard: null, document: doc }), 'fallback');
+    assert.deepEqual(ranges, [[0, 12]]);
+    assert.equal(focused, 1);
+  });
 });

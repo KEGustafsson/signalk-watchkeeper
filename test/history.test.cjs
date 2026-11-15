@@ -729,6 +729,19 @@ describe('reading a History API response', () => {
     assert.equal(text.length, 4096);
   });
 
+  it('does not wait on the cancel of a body whose declared length is too large', async () => {
+    const { readJsonBounded } = require('../lib/history-service.cjs');
+    const declared = {
+      headers: new Map([['content-length', String(64 * 1024 * 1024)]]),
+      body: { cancel: () => new Promise(() => {}) }
+    };
+    const outcome = await Promise.race([
+      readJsonBounded(declared).then(() => 'read', (error) => error.code || error.message),
+      new Promise((resolve) => setTimeout(() => resolve('hung'), 1000))
+    ]);
+    assert.equal(outcome, 'too-large');
+  });
+
   it('does not wait on a too-large history body whose cancel never settles', async () => {
     const { readJsonBounded } = require('../lib/history-service.cjs');
     const stuck = {
@@ -786,9 +799,14 @@ describe('a server URL that must not be called or quoted', () => {
       'http://user:sec retpw@boat.example:3000',
       'http:admin:hunter2@boat.example'
     ]) {
+      const calls = [];
       const listing = await listHistoryPaths(app, historyConfig({ historyServerUrl: url }), {
-        fetchImpl: () => assert.fail('no request expected')
+        fetchImpl: async (requested) => {
+          calls.push(String(requested));
+          return new Response('[]', { status: 200 });
+        }
       });
+      assert.equal(calls.length, 0, `${url} was called: ${calls.join(', ')}`);
       assert.doesNotMatch(listing.message, SECRETS, url);
       assert.match(resolveHistoryBaseUrl(app, historyConfig({ historyServerUrl: url })), /^not called: the configured Signal K server URL /, url);
     }
@@ -797,15 +815,25 @@ describe('a server URL that must not be called or quoted', () => {
   it('never calls one in a replay either', async () => {
     const { createWatchService } = require('../lib/watch-service.cjs');
     const host = { selfId: 'vessels.self', config: { settings: {} }, setPluginStatus() {}, handleMessage() {}, getSelfPath() {} };
+    const calls = [];
     const service = createWatchService(host, {
       now: () => Date.parse('2026-06-02T08:00:00Z'),
-      fetchImpl: () => assert.fail('no request expected')
+      fetchImpl: async (requested) => {
+        calls.push(String(requested));
+        return new Response('[]', { status: 200 });
+      }
     });
     service.start({ watchEnabled: true });
     try {
-      const result = await service.replay({ duration: 'PT1H' }, { historyServerUrl: 'http://admin:hunter2@boat.example:3000' });
-      assert.equal(result.ok, false);
-      assert.doesNotMatch(JSON.stringify(result), SECRETS);
+      const url = 'http://admin:hunter2@boat.example:3000';
+      // As the plugin hands it over, and raw: neither is called.
+      for (const config of [normalizeHistoryConfig({ historyServerUrl: url }, {}), { historyServerUrl: url }]) {
+        const result = await service.replay({ duration: 'PT1H' }, config);
+        assert.equal(calls.length, 0, `called: ${calls.join(', ')}`);
+        assert.equal(result.ok, false);
+        assert.match(result.message, /not called/);
+        assert.doesNotMatch(JSON.stringify(result), SECRETS);
+      }
     } finally {
       service.stop();
     }
@@ -814,9 +842,14 @@ describe('a server URL that must not be called or quoted', () => {
   it('refuses a URL ending in an empty query or fragment, and reads a blank setting as blank', async () => {
     for (const url of ['http://boat.local:3000?', 'http://boat.local:3000/#']) {
       assert.match(resolveHistoryBaseUrl(app, historyConfig({ historyServerUrl: url })), /has a query or a fragment/, url);
+      let called = 0;
       const listing = await listHistoryPaths(app, historyConfig({ historyServerUrl: url }), {
-        fetchImpl: () => assert.fail('no request expected')
+        fetchImpl: async () => {
+          called += 1;
+          return new Response('[]', { status: 200 });
+        }
       });
+      assert.equal(called, 0, url);
       assert.match(listing.message, /has a query or a fragment/, url);
     }
     const spaces = normalizeHistoryConfig({ historyServerUrl: '   ' }, { SIGNALK_WATCHKEEPER_HISTORY_URL: 'ftp://x' });

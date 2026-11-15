@@ -16,12 +16,20 @@ export interface TextAreaLike {
   style: { position: string; top: string; left: string; opacity: string };
   setAttribute(name: string, value: string): void;
   select(): void;
+  /** iOS Safari selects nothing in a readonly textarea on select() alone. */
+  setSelectionRange?(start: number, end: number): void;
+}
+
+/** Whatever had the focus before the copy, to give it back after. */
+export interface FocusableLike {
+  focus?(): void;
 }
 
 export interface DocumentLike {
   createElement(tag: 'textarea'): TextAreaLike;
   body: { appendChild(node: TextAreaLike): unknown; removeChild(node: TextAreaLike): unknown } | null;
   execCommand(command: 'copy'): boolean;
+  readonly activeElement?: FocusableLike | null;
 }
 
 export interface CopyEnvironment {
@@ -49,14 +57,25 @@ function copyWithTextarea(text: string, doc: DocumentLike | null | undefined): b
   area.style.top = '0';
   area.style.left = '-9999px';
   area.style.opacity = '0';
+  // Selecting the textarea moves the focus there; it goes back after, so a
+  // keyboard user keeps their place.
+  const previous = doc.activeElement;
   doc.body.appendChild(area);
   try {
     area.select();
+    if (typeof area.setSelectionRange === 'function') area.setSelectionRange(0, text.length);
     return doc.execCommand('copy') === true;
   } catch {
     return false;
   } finally {
     doc.body.removeChild(area);
+    if (previous && typeof previous.focus === 'function') {
+      try {
+        previous.focus();
+      } catch {
+        // Gone meanwhile: nothing to give the focus back to.
+      }
+    }
   }
 }
 

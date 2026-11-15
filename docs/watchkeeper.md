@@ -702,13 +702,17 @@ recorded paths, then their values in requests of up to 10 paths. It needs a
 history provider plugin (signalk-to-influxdb2, signalk-parquet, ...) recording
 on this server or another one.
 
-Three environment variables stand in for the settings when those are blank:
+Three environment variables stand in for the settings:
 
-| Variable | Stands in for |
-| --- | --- |
-| `SIGNALK_WATCHKEEPER_HISTORY_URL` | `historyServerUrl` |
-| `SIGNALK_WATCHKEEPER_HISTORY_API_KEY` | `historyApiKey` |
-| `SIGNALK_WATCHKEEPER_HISTORY_TIMEOUT_MS` | `historyTimeoutMs` |
+| Variable | Stands in for | When |
+| --- | --- | --- |
+| `SIGNALK_WATCHKEEPER_HISTORY_URL` | `historyServerUrl` | the setting is blank |
+| `SIGNALK_WATCHKEEPER_HISTORY_API_KEY` | `historyApiKey` | the setting is blank |
+| `SIGNALK_WATCHKEEPER_HISTORY_TIMEOUT_MS` | `historyTimeoutMs` | the settings were never saved |
+
+A number field cannot be left blank: once the plugin's settings are saved
+from the admin page, a timeout is stored (its default, 30000, included), and
+from then on the variable is not read.
 
 ### Which server gets your session
 
@@ -800,7 +804,7 @@ advice.
 
 ### Response size and time
 
-A History API response is read at most 16 MB far (a declared larger
+A History API response is read up to 16 MB (a declared larger
 `Content-Length` is refused without reading), and an error body at most 4 kB.
 The plugin runs in the Signal K server's own process, so a provider that
 ignores the requested resolution cannot exhaust its memory: the replay says the

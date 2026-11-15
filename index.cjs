@@ -6,6 +6,7 @@ const {
   normalizeHistoryConfig
 } = require('./lib/history-service.cjs');
 const { createWatchService } = require('./lib/watch-service.cjs');
+const { normalizeWatchConfig } = require('./lib/watch/engine.cjs');
 const { MAX_RULES, hasValidId, normalizeRules } = require('./lib/watch/rules.cjs');
 
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
@@ -673,8 +674,19 @@ module.exports = function createPlugin(app, dependencies = {}) {
       running = true;
       lifecycleGeneration += 1;
       watchService.start(options);
+      // A model is named but its server URL was refused: say so where the
+      // operator looks, not only when a rule fails to read.
+      const watch = normalizeWatchConfig(options);
+      const assistProblem =
+        watch.ruleAssistModel && watch.ollamaUrlProblem
+          ? `Rules the parser cannot read are not sent to ${watch.ruleAssistModel}: the "Ollama server for reading rules" setting (ollamaUrl) ${watch.ollamaUrlProblem}.`
+          : '';
+      if (assistProblem && typeof app.error === 'function') {
+        app.error(`Watchkeeper: ${assistProblem}`);
+      }
       if (typeof app.setPluginStatus === 'function') {
-        app.setPluginStatus(options.watchEnabled === true ? 'Watchkeeper is watching.' : 'Watchkeeper is off; enable the watch in its settings.');
+        const state = options.watchEnabled === true ? 'Watchkeeper is watching.' : 'Watchkeeper is off; enable the watch in its settings.';
+        app.setPluginStatus(assistProblem ? `${state} ${assistProblem}` : state);
       }
     },
     registerWithRouter: (router) => {

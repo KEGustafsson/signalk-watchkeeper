@@ -667,6 +667,70 @@ describe('stored settings and the write queue', () => {
     }
   });
 
+  it('does not add a rule twice when the plugin restarts from the options its save stored', async () => {
+    const writer = { skPrincipal: { permissions: 'admin' } };
+    const base = { text: 'hot', path: 'propulsion.main.temperature', op: 'above', value: 360, severity: 'warn', forSeconds: 0 };
+    const { normalizeRules } = require('../lib/watch/rules.cjs');
+    const [derived] = normalizeRules([base]);
+    // With and without a different rule already holding the derived id.
+    for (const stored of [[], [{ ...base, id: derived.id, value: 999, text: 'other' }]]) {
+      const host = createHost();
+      let finish;
+      const saves = [];
+      host.savePluginOptions = (options, done) => {
+        saves.push(options);
+        if (saves.length === 1) finish = done;
+        else done();
+      };
+      const { plugin, routes } = routesFor(host);
+      plugin.start({ watchEnabled: true, watchRules: stored });
+      try {
+        const reply = recorder();
+        const adding = routes['POST /watch/rules/add']({ ...writer, body: { rule: base } }, reply);
+        await new Promise((resolve) => setImmediate(resolve));
+        const written = saves[0].watchRules.map((rule) => rule.id);
+        // The server restarts the plugin on the options just written.
+        plugin.stop();
+        plugin.start({ ...saves[0] });
+        finish();
+        await adding;
+        assert.equal(reply.statusCode, 200);
+        assert.deepEqual(saves[saves.length - 1].watchRules.map((rule) => rule.id), written, 'no numbered copy of itself');
+        assert.deepEqual(reply.body.rules.map((rule) => rule.id), written);
+      } finally {
+        plugin.stop();
+      }
+    }
+  });
+
+  it('answers a remove as done when the plugin restarts from the options its save stored', async () => {
+    const writer = { skPrincipal: { permissions: 'admin' } };
+    const rule = { id: 'r-gone', text: 'x', path: 'propulsion.main.temperature', op: 'above', value: 360, forSeconds: 0, severity: 'warn' };
+    const host = createHost();
+    let finish;
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      if (saves.length === 1) finish = done;
+      else done();
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ watchEnabled: true, watchRules: [rule] });
+    try {
+      const reply = recorder();
+      const removing = routes['POST /watch/rules/remove']({ ...writer, body: { id: 'r-gone' } }, reply);
+      await new Promise((resolve) => setImmediate(resolve));
+      plugin.stop();
+      plugin.start({ ...saves[0] });
+      finish();
+      await removing;
+      assert.equal(reply.statusCode, 200);
+      assert.deepEqual(reply.body.rules, []);
+    } finally {
+      plugin.stop();
+    }
+  });
+
   it('answers a remove as done when a restart lands during its save', async () => {
     const writer = { skPrincipal: { permissions: 'admin' } };
     const rule = { id: 'r-gone', text: 'x', path: 'propulsion.main.temperature', op: 'above', value: 360, forSeconds: 0, severity: 'warn' };

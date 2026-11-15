@@ -93,22 +93,41 @@ export default function WatchPanel(props: WatchPanelProps) {
   const [copied, setCopied] = React.useState<string | null>(null);
   // Text the browser would not copy by either means, shown for copying by hand.
   const [manualCopy, setManualCopy] = React.useState<string | null>(null);
-  const [copiedTimer] = React.useState<{ current: ReturnType<typeof setTimeout> | undefined }>({ current: undefined });
-  React.useEffect(() => () => clearTimeout(copiedTimer.current), [copiedTimer]);
+  // Bumped on every refused copy, so the box is built again and its new text
+  // is selected, even when the text is the same.
+  const [manualCopyKey, setManualCopyKey] = React.useState<number>(0);
+  const [copiedTimer] = React.useState<{ current: ReturnType<typeof setTimeout> | undefined; alive: boolean }>({
+    current: undefined,
+    alive: true
+  });
+  React.useEffect(() => {
+    copiedTimer.alive = true;
+    return () => {
+      copiedTimer.alive = false;
+      clearTimeout(copiedTimer.current);
+    };
+  }, [copiedTimer]);
+  // The box goes, and the notice that pointed at it goes with it.
+  const closeManualCopy = React.useCallback(() => {
+    setManualCopy(null);
+    setNotice((current) => (current === COPY_REFUSED ? null : current));
+  }, []);
   const copyFor = React.useCallback((key: string, text: string) => {
     void copyText(text).then((outcome) => {
+      if (!copiedTimer.alive) return;
       if (outcome === 'refused') {
         setCopied(null);
         setManualCopy(text);
+        setManualCopyKey((count) => count + 1);
         setNotice(COPY_REFUSED);
         return;
       }
-      setManualCopy(null);
+      closeManualCopy();
       setCopied(key);
       clearTimeout(copiedTimer.current);
       copiedTimer.current = setTimeout(() => setCopied((current) => (current === key ? null : current)), COPIED_MS);
     });
-  }, [copiedTimer]);
+  }, [copiedTimer, closeManualCopy]);
 
   const fetchImpl = props.fetchImpl ?? globalThis.fetch;
   const statusUrl = props.endpoint('/watch/status');
@@ -609,7 +628,8 @@ export default function WatchPanel(props: WatchPanelProps) {
                   <p style={{ margin: 0, color: '#b45309' }}>{compiled.reason}</p>
                   {compiled.assistNote ? (
                     <p style={{ margin: '0.2rem 0 0 0', color: '#475569', fontSize: '0.9rem' }}>
-                      Also asked {compiled.model ?? 'the model'}: {compiled.assistNote}
+                      {compiled.model ? `Also asked ${compiled.model}: ` : ''}
+                      {compiled.assistNote}
                     </p>
                   ) : null}
                   {compiled.alternatives && compiled.alternatives.length > 0 ? (
@@ -681,6 +701,7 @@ export default function WatchPanel(props: WatchPanelProps) {
           {manualCopy !== null ? (
             <div style={{ marginTop: '0.4rem' }}>
               <textarea
+                key={manualCopyKey}
                 readOnly
                 autoFocus
                 aria-label="Text to copy"
@@ -689,7 +710,7 @@ export default function WatchPanel(props: WatchPanelProps) {
                 style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'ui-monospace, monospace', fontSize: '0.85rem' }}
                 onFocus={(event: { currentTarget: HTMLTextAreaElement }) => event.currentTarget.select()}
               />
-              <button type="button" style={buttonStyle} onClick={() => setManualCopy(null)}>
+              <button type="button" style={buttonStyle} onClick={closeManualCopy}>
                 Done
               </button>
             </div>

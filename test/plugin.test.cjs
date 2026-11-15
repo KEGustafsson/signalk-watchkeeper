@@ -208,6 +208,34 @@ describe('the Ollama server for reading rules', () => {
     }
   });
 
+  it('does not say a model was asked when the URL is refused, and says so at start', async () => {
+    const { response } = await compileWith({ ollamaUrl: 'gpu.local:11434' });
+    assert.equal(response.body.model, undefined);
+    assert.equal(response.body.assist, 'not-asked');
+
+    const host = createHost();
+    const statuses = [];
+    const errors = [];
+    host.setPluginStatus = (message) => statuses.push(message);
+    host.error = (message) => errors.push(message);
+    const plugin = createPlugin(host, { fetchImpl: async () => new Response('{}') });
+    plugin.start({ watchEnabled: true, ollamaUrl: 'gpu.local:11434', ruleAssistModel: 'qwen3:0.6b' });
+    try {
+      assert.match(statuses[statuses.length - 1], /not sent to qwen3:0\.6b.*ollamaUrl/);
+      assert.equal(errors.length, 1);
+    } finally {
+      plugin.stop();
+    }
+    // A good URL, or no model, raises nothing.
+    const quiet = createHost();
+    const said = [];
+    quiet.setPluginStatus = (message) => said.push(message);
+    const other = createPlugin(quiet, { fetchImpl: async () => new Response('{}') });
+    other.start({ watchEnabled: true, ollamaUrl: 'gpu.local:11434' });
+    other.stop();
+    assert.doesNotMatch(said.join(' '), /ollamaUrl/);
+  });
+
   it('names the cause when Ollama is not running there', async () => {
     const { asked, response } = await compileWith({ ollamaUrl: 'http://gpu.local:11434' }, async () => {
       throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });

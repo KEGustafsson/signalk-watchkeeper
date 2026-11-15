@@ -123,3 +123,35 @@ describe('createTimedFetch', () => {
     await assert.rejects(pending, (error) => error.name === 'AbortError' && error.code !== 'timeout');
   });
 });
+
+describe('describeFetchFailure', () => {
+  const { describeFetchFailure } = require('../lib/http-utils.cjs');
+  const failed = (message, cause) => Object.assign(new Error(message), cause ? { cause } : {});
+
+  it('drops a raw password that has a slash, ?, #, a space or no scheme', () => {
+    for (const quoted of [
+      'http://admin:pa/ss@boat.example:3000',
+      'http://admin:pa#ss@boat.example',
+      'http://admin:pa?ss@boat.example',
+      'http://user:sec retpw@boat.example',
+      '//u:secretpw@boat.example'
+    ]) {
+      const { message } = describeFetchFailure(failed(`could not reach ${quoted}/api`));
+      assert.doesNotMatch(message, /secret|pa\/ss|pa#ss|pa\?ss|retpw|admin|sec /, `${quoted} -> ${message}`);
+      assert.match(message, /boat\.example/);
+    }
+  });
+
+  it('keeps a cause code only when it looks like one', () => {
+    assert.equal(describeFetchFailure(failed('fetch failed', { code: 'ECONNREFUSED' })).detail, 'ECONNREFUSED');
+    const odd = describeFetchFailure(failed('fetch failed', { code: 'http://u:p@h', message: 'x' }));
+    assert.equal(odd.code, undefined);
+    assert.doesNotMatch(String(odd.detail), /u:p@/);
+  });
+
+  it("gives the cause's own message when it has no code (fetch's bad port)", () => {
+    const { code, detail } = describeFetchFailure(failed('fetch failed', new Error('bad port')));
+    assert.equal(code, undefined);
+    assert.equal(detail, 'bad port');
+  });
+});
