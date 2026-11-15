@@ -54,7 +54,7 @@ assert.equal(pkg.name, 'signalk-watchkeeper');
 assert.ok(pkg.keywords.includes('signalk-node-server-plugin'), 'Missing signalk-node-server-plugin keyword');
 assert.ok(typeof pkg.repository?.url === 'string', 'package.json needs a repository URL');
 assert.ok(typeof pkg.engines?.node === 'string', 'package.json needs engines.node');
-assert.equal(pkg.license, 'Apache-2.0', 'package.json license must be the SPDX id Apache-2.0, matching LICENSE');
+assert.equal(pkg.license, 'EUPL-1.2', 'package.json license must be the SPDX id EUPL-1.2, matching LICENSE');
 for (const asset of [pkg.signalk.appIcon, ...(pkg.signalk.screenshots || [])]) {
   const relative = String(asset).replace(/^\.?\//, '');
   assert.equal(fs.existsSync(relative), true, `Declared Signal K asset is missing: ${asset}`);

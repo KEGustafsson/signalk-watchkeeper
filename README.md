@@ -169,4 +169,4 @@ server.
 
 ## License
 
-Apache-2.0
+European Union Public Licence v. 1.2 (EUPL-1.2). See [`LICENSE`](https://github.com/KEGustafsson/signalk-watchkeeper/blob/main/LICENSE).

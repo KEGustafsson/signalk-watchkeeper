@@ -236,6 +236,9 @@ the move is listed under **Changed**.
 
 ### Changed (in the move from signalk-ai-bridge)
 
+- **Licensed under the European Union Public Licence v. 1.2 (EUPL-1.2)**
+  (`LICENSE` and `package.json`), not the Apache-2.0 of signalk-ai-bridge.
+
 - The plugin id is `signalk-watchkeeper`, and routes are under
   `/plugins/signalk-watchkeeper/watch/...`.
 - Notifications are published under `notifications.watchkeeper.*` (they were
