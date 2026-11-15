@@ -208,6 +208,27 @@ describe('CodeRabbit review of PR 1: operating states', () => {
       assert.equal(engine.status().regimeChanges.length, 0, JSON.stringify(overrides));
     }
   });
+
+  it('still reads the engine state from one source once its table of first sources is full', () => {
+    const fill = (engine, t) => {
+      for (let index = 0; index < 5100; index += 1) engine.ingest(`environment.extra${index}.temperature`, 290, t, 'n2k.a');
+    };
+    // Two sources disagreeing: not gated by either one's every sample.
+    const opposed = newEngine({ watchMaxPaths: 10 });
+    fill(opposed, T0);
+    const rand = noise(47);
+    run(opposed, T0, T0 + 10 * MINUTE, SECOND, () => [
+      ['propulsion.main.revolutions', 20 + 0.1 * rand(), 'n2k.a'],
+      ['propulsion.main.revolutions', 0, 'n2k.b']
+    ]);
+    assert.equal(opposed.status().regimeChanges.length, 0, 'opposing sources do not flip the regime');
+    // One source: its engine start is still seen.
+    const single = newEngine({ watchMaxPaths: 10 });
+    fill(single, T0);
+    let t = run(single, T0, T0 + 5 * MINUTE, SECOND, () => [['propulsion.main.revolutions', 0, 'n2k.a']]);
+    run(single, t, t + 5 * MINUTE, SECOND, () => [['propulsion.main.revolutions', 20, 'n2k.a']]);
+    assert.equal(single.status().regimeChanges.length, 1, 'a single source still gates');
+  });
 });
 
 describe('CodeRabbit review of PR 1: incidents', () => {
