@@ -132,6 +132,26 @@ The demo pre-rolls 45 minutes of a normal passage, then the alternator stops
 charging, the engine runs hot, a sensor drops off the bus and the GNSS fix
 starts walking away from dead reckoning.
 
+### CI and publishing
+
+`signalk-plugin-ci` runs the
+[Signal K reusable plugin CI](https://github.com/SignalK/signalk-server/blob/master/.github/workflows/plugin-ci.yml)
+on every pushed branch and tag and on pull requests: package metadata, load
+and lifecycle, an App Store install and the tests, on Linux, macOS and
+Windows with Node 22 and 24, and in a live signalk-server. `ci` runs on pull
+requests and `main`: lint, types, tests, a production audit, and the suite
+again from the packed tarball with production dependencies only.
+
+The [Signal K plugin registry](https://signalk.org/signalk-plugin-registry/)
+scores the published package, so a release:
+
+- is published with `npm publish` from a git checkout of `main`, so npm
+  records the commit (`gitHead`) the registry looks up a plugin-ci run for;
+  a tarball, or a tree without `.git`, costs 10 points;
+- is the `latest` dist-tag, the only version the registry scores;
+- keeps the tests in the tarball (`files` in `package.json`), since the
+  registry runs `npm test` inside the installed plugin.
+
 ## History
 
 Watchkeeper was first developed inside
