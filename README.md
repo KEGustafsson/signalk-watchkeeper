@@ -1,0 +1,172 @@
+# Signal K Watchkeeper
+
+A [Signal K](https://signalk.org) server plugin that watches every path of your
+own vessel, learns how each one normally behaves, and raises a Signal K
+notification when one departs from it.
+
+It finds the things nobody set a threshold for: a coolant temperature creeping
+up at cruise revs, an alternator that stopped charging, a sensor that froze or
+dropped off the bus, a bilge pump cycling more often than it used to, a tank or
+battery heading for its limit, a GNSS fix that dead reckoning and the other
+receivers do not corroborate.
+
+> Watchkeeper is experimental. It adds detection for things nobody set a
+> threshold for. It does not replace the alarms already on the boat, and it is
+> not a safety-critical system.
+
+## How it works
+
+- **Statistics, not a language model.** Every check is a small, deterministic
+  computation on the CPU, microseconds per update. Every message is a template
+  filled with the numbers the check measured.
+- **Nothing to configure per boat.** It subscribes to every self-vessel path,
+  standard or a plugin's own, and learns each one during a learning period
+  (30 minutes by default). The learned baseline is saved, so a restart does not
+  cost another learning period.
+- **Operating states.** When an engine starts or a charger changes mode, the
+  affected paths re-learn (or restore the baseline they had in that state)
+  instead of alerting.
+- **Incidents.** Related findings are grouped, earliest sign first.
+- **Notifications** go under `notifications.watchkeeper.*`, at `warn` or
+  `alert` only - never `alarm` or `emergency`, which belong to real alarm
+  sources - so KIP, Freeboard, WilhelmSK and every other notification consumer
+  shows them with no extra setup.
+- **Your own watches.** Type a rule in plain words ("tell me if the coolant
+  goes above 95 for 2 minutes", "warn me when the bilge pump runs while the
+  engine is off"). A built-in parser reads it, with no model, and reads it back
+  to you before anything is stored. Optionally a small Ollama model reads what
+  the parser cannot.
+- **Feedback and replay.** "Not useful" makes a path need a bigger departure
+  next time. A replay runs a fresh watch over recorded history (the Signal K
+  History API) and says what it would have raised, so sensitivity can be judged
+  before it ever interrupts anyone.
+
+The full reference - every check and its thresholds, the rule format, the HTTP
+API and tuning - is in [docs/watchkeeper.md](docs/watchkeeper.md).
+
+## Install
+
+Watchkeeper needs a Signal K server running on Node.js 22.12 or later.
+
+From the Signal K server's App Store, search for **Watchkeeper**, or:
+
+```bash
+cd ~/.signalk
+npm install signalk-watchkeeper
+```
+
+Restart the server, open **Server → Plugin Config → Watchkeeper**, enable it
+and turn on **Watch all Signal K paths**. The panel is under **Webapps →
+Signal K Watchkeeper**.
+
+Replay needs a History API provider plugin, such as signalk-to-influxdb2 or
+signalk-parquet.
+
+## Settings
+
+| Setting | Default | |
+| --- | --- | --- |
+| Watch all Signal K paths (`watchEnabled`) | off | Turn the watch on |
+| Watch sensitivity (`watchSensitivity`) | normal | `low`, `normal` or `high` |
+| Learning period (`watchLearningMinutes`) | 30 | Minutes before a new path can raise anything |
+| Publish notifications (`watchNotifications`) | on | Under `notifications.watchkeeper.*` |
+| Sound on alerts (`watchSound`) | off | Adds `sound` to alert-level notifications |
+| Skip helm, wind and seabed paths (`watchDefaultExclusions`) | on | Heading, wind, depth and similar change quickly by nature |
+| Also skip these paths (`watchExcludePaths`) | none | Paths or patterns |
+| Counters under other names (`watchCounterPaths`) | none | Paths that only count up |
+| Most paths to watch (`watchMaxPaths`) | 1500 | A bound on memory and CPU |
+| Ollama server for reading rules (`ollamaUrl`) | `http://localhost:11434` | |
+| Model for reading rules (`ruleAssistModel`) | empty | A small model such as `qwen3:0.6b`; empty is the parser only |
+| Signal K server URL for replay (`historyServerUrl`) | empty | Empty is this server |
+| History API key (`historyApiKey`) | empty | For a history server that is not this one |
+| History provider (`historyProvider`) | empty | A specific provider plugin |
+| History request timeout (`historyTimeoutMs`) | 30000 | Per replay request, at least 30 s |
+
+The History API settings can also come from the environment:
+`SIGNALK_WATCHKEEPER_HISTORY_URL` and `SIGNALK_WATCHKEEPER_HISTORY_API_KEY`
+when those settings are blank, and `SIGNALK_WATCHKEEPER_HISTORY_TIMEOUT_MS`
+only until the settings are first saved (the form then stores a timeout, its
+default included). Which server is sent your session,
+and how to make Signal K's own TLS certificate verify, are in
+[Replay and the History API](docs/watchkeeper.md#replay-and-the-history-api).
+
+Watch rules are stored with the plugin's settings, written by the panel.
+
+## HTTP API
+
+All routes are under `/plugins/signalk-watchkeeper`:
+
+| Route | |
+| --- | --- |
+| `GET /watch/status` | What the watch has learned and found |
+| `GET /watch/inventory` | Every path found, and what is done with each |
+| `GET /watch/unusual` | The paths furthest from their own normal right now |
+| `GET /watch/series?path=…` | The learned series behind a finding |
+| `GET /watch/report?hours=24` | What the watch saw, as plain lines |
+| `POST /watch/mute`, `POST /watch/unmute` | Silence a path for a while |
+| `POST /watch/feedback` | "Not useful", or undo it |
+| `POST /watch/rules/compile` | Read a plain-language rule back, without storing it |
+| `POST /watch/rules/add`, `/remove`, `/save` | Change the stored rules |
+| `POST /watch/replay` | Run a fresh watch over recorded history |
+
+Routes that change something need a login with write access when Signal K
+security is on. Details are in [docs/watchkeeper.md](docs/watchkeeper.md#http-api).
+
+## Development
+
+```bash
+npm install
+npm run check      # lint (smoke test), typecheck and tests
+npm run build      # the embedded panel, into public/
+```
+
+To see the panel against the real backend code without a boat:
+
+```bash
+node scripts/preview-host.mjs --demo
+```
+
+```bash
+SIGNALK_WATCHKEEPER_DEV_TARGET=http://127.0.0.1:3100 npm run dev
+```
+
+The demo pre-rolls 45 minutes of a normal passage, then the alternator stops
+charging, the engine runs hot, a sensor drops off the bus and the GNSS fix
+starts walking away from dead reckoning.
+
+### CI and publishing
+
+`signalk-plugin-ci` runs the
+[Signal K reusable plugin CI](https://github.com/SignalK/signalk-server/blob/master/.github/workflows/plugin-ci.yml)
+on every pushed branch and tag and on pull requests: package metadata, load
+and lifecycle, an App Store install and the tests, on Linux, macOS and
+Windows with Node 24 and 26, and in a live signalk-server. `ci` runs on pull
+requests and `main`: lint, types, tests, a production audit, a Trivy scan of
+the repository (failing on high or critical findings), and the suite again
+from the packed tarball with production dependencies only.
+
+The [Signal K plugin registry](https://signalk.org/signalk-plugin-registry/)
+scores the published package, so a release:
+
+- is published with `npm publish` from a git checkout of a commit that is
+  pushed to GitHub (by convention, `main` after the release is merged), so
+  npm records the commit (`gitHead`) the registry looks up a plugin-ci run
+  for. GitHub starts a push run only for the newest commit of a push (not
+  with `[skip ci]`), so publish from the tip of a push, or push a tag on the
+  release commit, which starts a run there. A tarball, a tree without
+  `.git`, or a commit never pushed costs 10 points;
+- is the `latest` dist-tag: the registry tests that version and marks every
+  other one outdated;
+- keeps the tests in the tarball (`files` in `package.json`), since the
+  registry runs `npm test` inside the installed plugin.
+
+## History
+
+Watchkeeper was first developed inside
+[signalk-ai-bridge](https://github.com/KEGustafsson/signalk-ai-bridge) and moved
+here as its own plugin: it needs no language model, and runs on any Signal K
+server.
+
+## License
+
+Apache-2.0

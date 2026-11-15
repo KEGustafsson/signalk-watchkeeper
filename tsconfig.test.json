@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": ".tmp-tests",
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2022",
+    "types": [],
+    "rootDir": "./src"
+  },
+  "include": [
+    "src/test-node-shims.d.ts",
+    "src/watchText.ts",
+    "src/watchText.test.ts",
+    "src/clipboard.ts",
+    "src/clipboard.test.ts"
+  ]
+}
