@@ -141,16 +141,22 @@ starts walking away from dead reckoning.
 on every pushed branch and tag and on pull requests: package metadata, load
 and lifecycle, an App Store install and the tests, on Linux, macOS and
 Windows with Node 22 and 24, and in a live signalk-server. `ci` runs on pull
-requests and `main`: lint, types, tests, a production audit, and the suite
-again from the packed tarball with production dependencies only.
+requests and `main`: lint, types, tests, a production audit, a Trivy scan of
+the repository (failing on high or critical findings), and the suite again
+from the packed tarball with production dependencies only.
 
 The [Signal K plugin registry](https://signalk.org/signalk-plugin-registry/)
 scores the published package, so a release:
 
-- is published with `npm publish` from a git checkout of `main`, so npm
-  records the commit (`gitHead`) the registry looks up a plugin-ci run for;
-  a tarball, or a tree without `.git`, costs 10 points;
-- is the `latest` dist-tag, the only version the registry scores;
+- is published with `npm publish` from a git checkout of a commit that is
+  pushed to GitHub (by convention, `main` after the release is merged), so
+  npm records the commit (`gitHead`) the registry looks up a plugin-ci run
+  for. GitHub starts a push run only for the newest commit of a push (not
+  with `[skip ci]`), so publish from the tip of a push, or push a tag on the
+  release commit, which starts a run there. A tarball, a tree without
+  `.git`, or a commit never pushed costs 10 points;
+- is the `latest` dist-tag: the registry tests that version and marks every
+  other one outdated;
 - keeps the tests in the tarball (`files` in `package.json`), since the
   registry runs `npm test` inside the installed plugin.
 

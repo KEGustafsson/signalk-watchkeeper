@@ -69,6 +69,12 @@ function errorText(status: number, body: unknown, fallback: string): string {
   return message ?? fallback;
 }
 
+/** Every character of a text box selected; iOS selects nothing on select() alone. */
+function selectAll(area: HTMLTextAreaElement): void {
+  area.select();
+  area.setSelectionRange(0, area.value.length);
+}
+
 export default function WatchPanel(props: WatchPanelProps) {
   const [status, setStatus] = React.useState<WatchStatus | null>(null);
   const [unreachable, setUnreachable] = React.useState<boolean>(false);
@@ -717,11 +723,10 @@ export default function WatchPanel(props: WatchPanelProps) {
                 value={manualCopy}
                 rows={Math.min(12, manualCopy.split('\n').length + 1)}
                 style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'ui-monospace, monospace', fontSize: '0.85rem' }}
-                onFocus={(event: { currentTarget: HTMLTextAreaElement }) => {
-                  // iOS selects nothing on select() alone.
-                  event.currentTarget.select();
-                  event.currentTarget.setSelectionRange(0, event.currentTarget.value.length);
-                }}
+                onFocus={(event: { currentTarget: HTMLTextAreaElement }) => selectAll(event.currentTarget)}
+                // The tap that follows focus on iOS (and a mouseup elsewhere)
+                // moves the caret and undoes the selection: select again.
+                onClick={(event: { currentTarget: HTMLTextAreaElement }) => selectAll(event.currentTarget)}
               />
               <button type="button" style={buttonStyle} onClick={closeManualCopy}>
                 Done

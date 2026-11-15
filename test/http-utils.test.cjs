@@ -151,7 +151,12 @@ describe('describeFetchFailure', () => {
       ['GET http://boat.local:3000, then mail ops@boat.example', 'GET http://boat.local:3000, then mail ops@boat.example'],
       ['reach http://[::1]:3000/signalk/v2/api/history/values; skipper@boat.example', 'reach http://[::1]:3000/signalk/v2/api/history/values; skipper@boat.example'],
       ['http://[::1]:3000/x?paths=a@b', 'http://[::1]:3000/x?paths=a@b'],
-      ['http://boat.example:3000/x?email=a@b.c', 'http://boat.example:3000/x?email=a@b.c']
+      ['http://boat.example:3000/x?email=a@b.c', 'http://boat.example:3000/x?email=a@b.c'],
+      ['{"url":"http://boat.local:3000","contact":"ops@boat.example"}', '{"url":"http://boat.local:3000","contact":"ops@boat.example"}'],
+      ["url='http://boat.local:3000',user='ops@x'", "url='http://boat.local:3000',user='ops@x'"],
+      ['<http://boat.local:3000>ops@x', '<http://boat.local:3000>ops@x'],
+      ['http://boat.example\\@evil.example/x', 'http://boat.example\\@evil.example/x'],
+      ['http://[::1]:3000//@(@?', 'http://[::1]:3000//@(@?']
     ]) {
       assert.equal(describeFetchFailure(failed(text)).message, text === kept ? text : kept, text);
     }

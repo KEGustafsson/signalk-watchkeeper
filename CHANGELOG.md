@@ -44,6 +44,15 @@ the move is listed under **Changed**.
 
 ### Fixed (from CodeRabbit's review of the import)
 
+- A rule add redone after a restart that left no room, then one that did,
+  is answered as stored, not "already 50 watches"; and a save the plugin
+  was stopped during says what is stored (the change, or the options it
+  restarted with).
+- Error text keeps the host that failed when a URL is followed by a quote,
+  a bracket or a backslash and a later `@`, and an `@` after `//` inside a
+  path is kept.
+- The manual copy box selects its text again on the tap that follows focus
+  (iOS).
 - "Not above 95 °C", "not below 12 V" and "does not exceed" are read as
   their opposite (`atMost`, `atLeast`), in a rule and in its guard; "not
   above" was stored as `above`.

@@ -833,6 +833,61 @@ describe('stored settings and the write queue', () => {
     }
   });
 
+  it('answers a rule add as done when a restart that left no room is followed by one that does', async () => {
+    const host = createHost();
+    const full = Array.from({ length: 50 }, (_, index) => rule(`r-fill-${index}`, 300 + index));
+    const saves = [];
+    let plugin;
+    host.savePluginOptions = (stored, done) => {
+      saves.push(stored);
+      // Restarted during the first write with 50 other rules (no room), and
+      // during the second (putting those back) with none; the third lands.
+      if (saves.length <= 2) {
+        plugin.stop();
+        plugin.start({ watchEnabled: true, watchRules: saves.length === 1 ? full : [] });
+      }
+      done();
+    };
+    const created = routesFor(host);
+    plugin = created.plugin;
+    plugin.start({ watchEnabled: true, watchRules: [] });
+    try {
+      const reply = recorder();
+      await created.routes['POST /watch/rules/add']({ body: { rule: rule('r-new', 400) } }, reply);
+      assert.equal(reply.statusCode, 200, JSON.stringify(reply.body));
+      assert.ok(ids(saves[saves.length - 1].watchRules).includes('r-new'));
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('does not say the change was written when the last write put the restart\'s options back', async () => {
+    const host = createHost();
+    const full = Array.from({ length: 50 }, (_, index) => rule(`r-fill-${index}`, 300 + index));
+    const saves = [];
+    let plugin;
+    host.savePluginOptions = (stored, done) => {
+      saves.push(stored);
+      plugin.stop();
+      // Restarted with no room, then disabled while those options are put back.
+      if (saves.length === 1) plugin.start({ watchEnabled: true, watchRules: full });
+      done();
+    };
+    const created = routesFor(host);
+    plugin = created.plugin;
+    plugin.start({ watchEnabled: true, watchRules: [] });
+    try {
+      const reply = recorder();
+      await created.routes['POST /watch/rules/add']({ body: { rule: rule('r-new', 400) } }, reply);
+      assert.equal(saves.length, 2);
+      assert.equal(reply.statusCode, 503);
+      assert.doesNotMatch(reply.body.error.message, /change was written/);
+      assert.match(reply.body.error.message, /the ones it restarted with/);
+    } finally {
+      plugin.stop();
+    }
+  });
+
   it('writes nothing for a watch change that changes nothing', async () => {
     const writer = { skPrincipal: { permissions: 'admin' } };
     const rule = (id, value) => ({ id, text: id, path: 'propulsion.main.temperature', op: 'above', value, forSeconds: 0, severity: 'warn' });
