@@ -9,6 +9,7 @@ const { parseRule } = require('../lib/watch/rule-parser.cjs');
 const { describeRule, evaluateRule, normalizeRule } = require('../lib/watch/rules.cjs');
 const { assistRule, buildSchema } = require('../lib/watch/rule-assist.cjs');
 const { createWatchEngine, normalizeWatchConfig } = require('../lib/watch/engine.cjs');
+const { createWatchService } = require('../lib/watch-service.cjs');
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -1474,5 +1475,47 @@ describe('review of 76b201d: a modal in a condition, and the phrasings offered',
     assert.equal(result.terminal, true);
     assert.match(result.reason, /^Could not read "coolant needs to stay below 95 °C"/);
     assert.doesNotMatch(result.reason, /warn me/);
+  });
+});
+
+describe("CodeRabbit's review of 76b201d: a joined clause refused as ambiguous", () => {
+  const JOINED = [
+    ['coolant above 95 °C and battery voltage may be below 12 V', /^Could not read "battery voltage may be below 12 V": "may be" does not say whether/],
+    ['coolant above 95 °C and battery voltage is not not below 12 V', /^Could not read "battery voltage is not not below 12 v": it negates the comparison twice/],
+    ['battery voltage may be below 12 V or coolant above 95 °C', /^Could not read "battery voltage may be below 12 V": "may be" does not say whether/]
+  ];
+
+  it('refuses the request for good, with the clause\'s own refusal', () => {
+    for (const [text, pattern] of JOINED) {
+      const result = parseRule(text, VESSEL);
+      assert.equal(result.ok, false, text);
+      assert.equal(result.terminal, true, `${text}: not passed to the model`);
+      assert.match(result.reason, pattern, text);
+    }
+  });
+
+  it('does not ask the model for it', async () => {
+    let onDelta;
+    let calls = 0;
+    const service = createWatchService(
+      { subscriptionmanager: { subscribe(command, unsubscribes, onError, callback) { onDelta = callback; } } },
+      { now: () => T0, fetchImpl: async () => { calls += 1; return new Response('{}', { status: 500 }); } }
+    );
+    service.start({ watchEnabled: true, ruleAssistModel: 'qwen3:0.6b' });
+    try {
+      onDelta({ updates: [{ values: [
+        { path: 'electrical.batteries.house.voltage', value: 12.8 },
+        { path: 'propulsion.main.temperature', value: 353 }
+      ] }] });
+      for (const [text, pattern] of JOINED) {
+        const result = await service.compileRule({ text });
+        assert.equal(result.ok, false, text);
+        assert.match(result.reason, pattern, text);
+        assert.equal(result.assistNote, undefined, text);
+      }
+      assert.equal(calls, 0, 'no model was asked');
+    } finally {
+      service.stop();
+    }
   });
 });

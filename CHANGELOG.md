@@ -71,7 +71,9 @@ the move is listed under **Changed**.
   after storing answers 503 saying the change was saved, so it is not made
   again, instead of the stopped plugin's lists or a plain "stopped" - also
   when the save was redone after a restart that had loaded the change
-  already, so the redo had nothing left to write.
+  already, so the redo had nothing left to write. A rule sent without
+  `createdAt` is stamped once per change, not on every attempt: a redo a
+  millisecond later no longer finds a different list and writes it again.
 - Error text keeps the host that failed when a URL is followed by a quote,
   a bracket or a backslash and a later `@`, and an `@` after `//` inside a
   path is kept.
@@ -110,7 +112,10 @@ the move is listed under **Changed**.
   ambiguous, with the same phrasings - in a "while", the condition said
   plainly ("while battery voltage is below 12 V"), as a "while" is no
   alert; such refusals, like a comparison negated twice, are not passed to
-  the model, which is told that such requests say neither side. A "can"
+  the model, which is told that such requests say neither side - also when
+  the refused comparison is joined to another ("coolant above 95 °C and
+  battery voltage may be below 12 V" is refused with that comparison's own
+  reason, not passed on as trailing words). A "can"
   that is no modal ("jerry can below 20 %", "the jerry can is below 20 %",
   a path named "Jerry can") is part of the subject.
 - An operating state (engine running, charger mode) is read from its path's
@@ -167,7 +172,11 @@ the move is listed under **Changed**.
   even be live, which left no feed at all): a group dead for an hour keeps
   its own dropouts and is left out of the count, so the gateway that dies
   now is reported, with its own sources; and a second connection going
-  quiet joins a feed silence already reported. A connection is the label the server gives the source
+  quiet joins a feed silence already reported. A muted silent path counts
+  toward the feed only if its silence may have begun with the unmuted
+  paths' (the test they pass): ten muted paths that went quiet an hour after
+  four unmuted ones did are no "14 of 18" silent feed, and the four keep
+  their dropouts. A connection is the label the server gives the source
   (`update.source.label`: `can0` for `can0.115`, `venus` for every device of
   the Venus plugin, so one Venus device dying while the others report is its
   own dropouts, not a silent feed), kept with the path across a restart;

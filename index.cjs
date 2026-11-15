@@ -556,10 +556,14 @@ module.exports = function createPlugin(app, dependencies = {}) {
     let rules;
     let generation;
     let wrote = false;
+    // One moment for every attempt: a rule without `createdAt` is stamped
+    // the same each time, so a redo after a restart that loaded the options
+    // the first attempt wrote finds the same list, and writes nothing.
+    const stamp = Date.now();
     await updatePluginOptions((current) => {
       generation = lifecycleGeneration;
-      const before = normalizeRules(current.watchRules);
-      rules = normalizeRules(change(before));
+      const before = normalizeRules(current.watchRules, stamp);
+      rules = normalizeRules(change(before), stamp);
       // Nothing changed (a refused add, an unknown id, or a redo that finds
       // the change made): write nothing, so a no-op neither rewrites the
       // settings nor fails on a host that cannot store them.

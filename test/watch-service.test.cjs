@@ -475,7 +475,8 @@ describe('stored settings and the write queue', () => {
   }
 
 
-  const rule = (id, value = 360) => ({ id, text: id, path: 'propulsion.main.temperature', op: 'above', value, forSeconds: 0, severity: 'warn' });
+  // A fixed createdAt: a rule without one is stamped when it is normalized.
+  const rule = (id, value = 360) => ({ id, text: id, path: 'propulsion.main.temperature', op: 'above', value, forSeconds: 0, severity: 'warn', createdAt: 1767225600000 });
   const ids = (rules) => rules.map((item) => item.id);
 
   it('puts the restart\'s options back on disk when a redone change has nothing left to do', async () => {
@@ -1024,6 +1025,48 @@ describe('stored settings and the write queue', () => {
       assert.equal(writes, 0);
     } finally {
       second.plugin.stop();
+    }
+  });
+  it("stamps a rule without createdAt once per change, so a redo after a restart finds it made (CodeRabbit's review of 76b201d)", async () => {
+    const bare = ({ createdAt, ...rest }) => rest;
+    const realNow = Date.now;
+    for (const [route, body] of [
+      ['POST /watch/rules/save', { rules: [bare(rule('r-a')), bare(rule('r-d', 390))] }],
+      ['POST /watch/rules/add', { rule: bare(rule('r-b', 370)) }],
+      ['POST /watch/rules/remove', { id: 'r-c' }]
+    ]) {
+      // A clock that moves on every time it is read: a moment passes
+      // between the first write and the redo.
+      let clock = Date.parse('2026-06-01T08:00:00Z');
+      Date.now = () => (clock += 1);
+      const host = createHost();
+      let plugin;
+      const saves = [];
+      host.savePluginOptions = (options, done) => {
+        saves.push(JSON.parse(JSON.stringify(options)));
+        // The server restarts the plugin on the options just written.
+        if (saves.length === 1) {
+          plugin.stop();
+          plugin.start({ ...options });
+        }
+        done();
+      };
+      const created = routesFor(host);
+      plugin = created.plugin;
+      try {
+        plugin.start({ watchEnabled: true, watchRules: [bare(rule('r-a')), bare(rule('r-c', 380))] });
+        const reply = recorder();
+        await created.routes[route]({ body }, reply);
+        assert.equal(reply.statusCode, 200, route);
+        assert.equal(saves.length, 2, route);
+        // The redo wrote nothing of its own: it put back what the restart
+        // loaded, the list the first attempt stored.
+        assert.deepEqual(saves[1].watchRules, saves[0].watchRules, route);
+        assert.deepEqual(reply.body.rules, saves[0].watchRules, route);
+      } finally {
+        Date.now = realNow;
+        plugin.stop();
+      }
     }
   });
 });

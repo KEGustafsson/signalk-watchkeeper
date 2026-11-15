@@ -1713,3 +1713,42 @@ describe('review of 76b201d: outages while raised, feeds held for a slow path, c
     assert.match(failovers[0], /now reading shunt/);
   });
 });
+
+describe("CodeRabbit's review of 76b201d: muted paths in a feed silence", () => {
+  const names = (prefix, count) => Array.from({ length: count }, (_, index) => `environment.${prefix}${index}.temperature`);
+  const feed = (sources) => (list) => () => list.map((name) => [name, 290.15, sources(name)]);
+
+  it('does not take muted paths that went quiet an hour later for one silence with the unmuted ones', () => {
+    const engine = newEngine();
+    const stopped = names('stopped', 4);
+    const reporting = names('reporting', 4);
+    const muted = names('muted', 10);
+    const sample = feed((name) => (reporting.includes(name) ? 'can1.1' : stopped.includes(name) ? 'can0.1' : 'can0.2'));
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, sample([...stopped, ...reporting, ...muted]));
+    for (const name of muted) engine.mute(name, t + 4 * HOUR, t);
+    // Four unmuted paths stop; an hour later the ten muted ones do.
+    t = run(engine, t, t + HOUR, SECOND, sample([...reporting, ...muted]));
+    const dropouts = stopped.map((name) => `dropout:${name}`).sort();
+    assert.deepEqual(detectors(engine).sort(), dropouts);
+    t = run(engine, t, t + 3 * MINUTE, SECOND, sample(reporting));
+    assert.deepEqual(detectors(engine).sort(), dropouts, 'outages an hour apart are no "14 of 18" silent feed');
+  });
+
+  it('keeps the muted paths of a feed already reported when a second connection joins it later', () => {
+    const engine = newEngine();
+    const first = names('first', 6);
+    const muted = names('muted', 4);
+    const second = names('second', 4);
+    const live = names('live', 2);
+    const sample = feed((name) => (second.includes(name) ? 'can1.1' : live.includes(name) ? 'can2.1' : 'can0.1'));
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, sample([...first, ...muted, ...second, ...live]));
+    for (const name of muted) engine.mute(name, t + 4 * HOUR, t);
+    t = run(engine, t, t + 3 * MINUTE, SECOND, sample([...second, ...live]));
+    assert.deepEqual(engine.status().activeFindings.map((item) => item.message), ['10 of 16 regularly updating paths have gone quiet (sources: can0.1)']);
+    t = run(engine, t, t + 30 * MINUTE, SECOND, sample([...second, ...live]));
+    run(engine, t, t + 3 * MINUTE, SECOND, sample(live));
+    assert.deepEqual(engine.status().activeFindings.map((item) => item.message), [
+      '14 of 16 regularly updating paths have gone quiet (sources: can0.1, can1.1)'
+    ]);
+  });
+});
