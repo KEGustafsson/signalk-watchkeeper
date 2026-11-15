@@ -1658,3 +1658,27 @@ describe('review of 9366cdb, and the stale-log case', () => {
     assert.ok(!detectors(engine).includes('gnss.frozen:navigation.position'));
   });
 });
+
+describe('review of 8733f3c: the primary source of a path the watch does not baseline', () => {
+  it('does not take the silence before a failover for the new primary\'s interval', () => {
+    const engine = newEngine({ watchExcludePaths: ['electrical.batteries.house.voltage'] });
+    const path = 'electrical.batteries.house.voltage';
+    let t = run(engine, T0, T0 + 20 * MINUTE, SECOND, () => [[path, 13.2, 'bmv']]);
+    // An hour with nothing, then a second source, every second, for 35 s.
+    t = run(engine, t, t + 60 * MINUTE, 5 * SECOND, () => []);
+    t = run(engine, t, t + 35 * SECOND, SECOND, () => [[path, 13.21, 'shunt']]);
+    assert.match(engine.status().activeFindings.find((item) => item.detector === 'failover').message, /now reading shunt/);
+    // It stops, and the first source is back: it is the primary again as
+    // soon as the second has been quiet for 10 s, not after five times an
+    // interval the hour's silence made.
+    const back = t;
+    let at;
+    for (; t < back + 2 * MINUTE && at === undefined; t += SECOND) {
+      engine.ingest(path, 13.2, t, 'bmv');
+      if ((t - back) % (5 * SECOND) === 0) engine.tick(t);
+      const failover = engine.status().activeFindings.find((item) => item.detector === 'failover');
+      if (failover && /shunt went quiet; now reading bmv/.test(failover.message)) at = t;
+    }
+    assert.ok(at !== undefined && at - back <= 15 * SECOND, `back to bmv after ${at === undefined ? 'more than 2 min' : `${(at - back) / SECOND} s`}`);
+  });
+});

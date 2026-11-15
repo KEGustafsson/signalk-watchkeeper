@@ -547,27 +547,30 @@ module.exports = function createPlugin(app, dependencies = {}) {
    * two panels, or two quick clicks, apply to each other's result instead of
    * one overwriting the other from a stale list.
    */
-  // `{ rules, saved }`: the list, and whether the change was written (the
-  // last attempt's, so a redo that found nothing to do is not).
-  const changeWatchRules = async (change) => {
+  // `{ rules, saved }`: the list, and whether the change is stored - written
+  // by one of the attempts, and held by the rules stored at the end. A redo
+  // after a restart that loaded the options the first attempt wrote finds
+  // nothing to do, and the change is still saved; one that found it could
+  // not be made (`refused()`: no room left) is not.
+  const changeWatchRules = async (change, refused = () => false) => {
     let rules;
     let generation;
-    let saved = false;
+    let wrote = false;
     await updatePluginOptions((current) => {
       generation = lifecycleGeneration;
       const before = normalizeRules(current.watchRules);
       rules = normalizeRules(change(before));
-      // Nothing changed (a refused add, an unknown id): write nothing, so a
-      // no-op neither rewrites the settings nor fails on a host that cannot
-      // store them.
-      saved = JSON.stringify(rules) !== JSON.stringify(before);
-      if (!saved) {
+      // Nothing changed (a refused add, an unknown id, or a redo that finds
+      // the change made): write nothing, so a no-op neither rewrites the
+      // settings nor fails on a host that cannot store them.
+      if (JSON.stringify(rules) === JSON.stringify(before)) {
         return current;
       }
+      wrote = true;
       return { ...current, watchRules: rules };
     });
     // Restarted meanwhile: the new start already loaded the stored rules.
-    return { rules: generation === lifecycleGeneration ? watchService.setRules(rules) : rules, saved };
+    return { rules: generation === lifecycleGeneration ? watchService.setRules(rules) : rules, saved: wrote && !refused() };
   };
 
   /** POST /watch/rules/add { rule }: add one rule (or replace the one with its id). */
@@ -620,7 +623,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
           return current;
         }
         return [...others, rule];
-      });
+      }, () => full);
       // Stopped between the save and this reply: no lists from a stopped
       // plugin for the panel to take as the stored ones.
       if (rejectIfStoppedAfterSave(res, saved)) return;

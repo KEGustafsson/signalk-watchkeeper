@@ -348,6 +348,37 @@ describe('rule compilation: review follow-ups', () => {
       service.stop();
     }
   });
+
+  it('does not hand a request the parser refused as ambiguous to the model', async () => {
+    let onDelta;
+    let calls = 0;
+    const service = createWatchService(
+      { subscriptionmanager: { subscribe(command, unsubscribes, onError, callback) { onDelta = callback; } } },
+      { now: () => T0, fetchImpl: async () => { calls += 1; return new Response('{}', { status: 500 }); } }
+    );
+    service.start({ watchEnabled: true, ruleAssistModel: 'qwen3:0.6b' });
+    try {
+      onDelta({ updates: [{ values: [
+        { path: 'electrical.batteries.house.voltage', value: 12.8 },
+        { path: 'propulsion.main.temperature', value: 353 },
+        { path: 'propulsion.main.revolutions', value: 30 }
+      ] }] });
+      for (const [text, pattern] of [
+        ['house battery voltage should drop below 12 V', /may say when to alert or what is normal/],
+        ['house battery voltage will be below 12 V', /does not say whether/],
+        ['coolant above 95 while the engine revolutions should be above 600 rpm', /a "while" says when the watch applies/],
+        ['house battery voltage is not not above 14 V', /negates the comparison twice/],
+        ['alert me if the house battery voltage must stay above 12 V', /follows "if" or "when"/]
+      ]) {
+        const result = await service.compileRule({ text });
+        assert.equal(result.ok, false, text);
+        assert.match(result.reason, pattern, text);
+      }
+      assert.equal(calls, 0, 'no model was asked');
+    } finally {
+      service.stop();
+    }
+  });
 });
 
 describe('rule parser: unreadable extra phrases', () => {

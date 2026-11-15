@@ -51,7 +51,10 @@ the move is listed under **Changed**.
   that had sent alone for long is reported, and one that reports every 30 s
   keeps its place when a faster source appears. Other paths past the cap
   are not compared across sources, and take no room in the tables kept for
-  skipped paths.
+  skipped paths. That interval leaves out an outage, as a watched path's
+  does, and a new primary starts it afresh: an hour's silence before a
+  failover no longer makes a 1 s source wait minutes to take the primary
+  (and the operating state it gates) back.
 - Every request's error reply body is waited for at most 2 s by the fetch
   wrapper itself, also with no timeout set and when fetch ignores the
   abort, and such a body ends as a timeout rather than as an empty reply.
@@ -63,7 +66,9 @@ the move is listed under **Changed**.
   was stopped during says what is stored (the change, or the options it
   restarted with). A rule add, remove or save that the plugin stops right
   after storing answers 503 saying the change was saved, so it is not made
-  again, instead of the stopped plugin's lists or a plain "stopped".
+  again, instead of the stopped plugin's lists or a plain "stopped" - also
+  when the save was redone after a restart that had loaded the change
+  already, so the redo had nothing left to write.
 - Error text keeps the host that failed when a URL is followed by a quote,
   a bracket or a backslash and a later `@`, and an `@` after `//` inside a
   path is kept.
@@ -83,10 +88,20 @@ the move is listed under **Changed**.
   to, has to or ought to) says what is normal, so the rule alerts on its
   opposite (`atLeast` 14, `atMost` 12, `below` 20): "should be no higher than
   14 V" alerts above 14 V, like "should not exceed 14 V", instead of while the
-  voltage is normal. The read-back says so. "May", "can", "will" and the
-  like without "not", a requirement with a verb of crossing ("should drop
-  below 12 V", which may be the alert itself) and a requirement in a "while"
-  are refused as ambiguous, with the phrasings to use instead.
+  voltage is normal. The read-back says so, quoting the words as written
+  (verb and case kept: "must stays above 12 V", not "must above 12 v").
+  After "tell me if", "alert when" and the like, "should" is the conditional
+  one: "alert me if the battery voltage should be below 12 V" alerts below
+  12 V, as "should ever be below" and "should drop below" there do; other
+  requirements there ("alert me if it must stay above 12 V") are refused.
+  "May", "can", "will" and the like as a modal without "not" (with a verb
+  after it, or before "exceed"), a requirement with a verb of crossing and
+  no "if" ("should drop below 12 V", which may be the alert itself) and a
+  requirement in a "while" are refused as ambiguous, with the phrasings to
+  use instead; such refusals, like a comparison negated twice, are not
+  passed to the model, which is told the parser's reading of "should" after
+  "if" too. A "can" that is no modal ("jerry can below 20 %", "the jerry can
+  is below 20 %", a path named "Jerry can") is part of the subject.
 - An operating state (engine running, charger mode) is read from its path's
   primary source only: a second source reporting another value no longer
   flips it on every sample and keeps the paths it gates relearning.
@@ -100,11 +115,15 @@ the move is listed under **Changed**.
   not as separate dropouts an hour later. One short gap after the interval
   rose (a second reading a second after a long gap) no longer copies the
   raised interval into the regular one, which hid the sensor's death for
-  good; and a path that settles regular again forgets the longest gap it
-  came back from, and counts an outage that ended while it was still regular
-  as two hours at most: a sensor unplugged for two days, back, slowed and
-  then dead is reported after about an hour (under three if it came back
-  slow at once), not after three days.
+  good. An outage that ended while the path was still regular counts as
+  two hours at most, and is forgotten when the path settles regular again:
+  a sensor unplugged for two days, back, slowed and then dead is reported
+  after about an hour (under three if it came back slow at once), not after
+  three days. A gap that ended while the interval was already raised is the
+  sender's rhythm and is kept across a regular day: a sender that reports
+  every 10 s by day, every few minutes in the evening and not at all at night
+  is reported on its first night, not every night. A save from before keeps
+  no longest gap over two hours on a path that has settled regular.
 - A silent data feed is paths that went quiet together, on connections with
   nothing still reporting: raised paths that die over a night while steady
   ones report are their own dropouts, not one "Signal K data stopped
@@ -112,7 +131,18 @@ the move is listed under **Changed**.
   paths that went quiet an hour before the rest keep their own findings; and
   half the vessel's devices going quiet while every connection still reports
   is their dropouts, while one connection (`can1`) going quiet as a whole is
-  a silent feed.
+  a silent feed. Live takes evidence: a sample later than the path's own
+  interval after the rest went quiet, or two samples since, from a path that
+  is not overdue - a 55 s path whose last sample came 12 s after a gateway
+  stopped, or a raised path seen in those seconds, no longer holds the feed
+  back for minutes or an hour while every other path is reported on its
+  own. The group that went quiet most recently is the feed, not an older
+  and larger one (whose connection may even be live, which left no feed at
+  all): a group dead for an hour keeps its own dropouts and is
+  left out of the count, so the gateway that dies now is reported, with its
+  own sources; and a second connection going quiet joins a feed silence
+  already reported. A connection is everything before the source's last dot
+  (`n2k.can0` and `n2k.can1` are two).
 - A rule whose value or guard is edited waits its full duration again, like
   one moved to another path; a "changes" rule whose guard or value is edited
   does not report the change it already reported again.

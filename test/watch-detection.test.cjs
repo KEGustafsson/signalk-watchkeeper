@@ -1263,3 +1263,227 @@ describe('review of 58a9678: which silences are one silent feed', () => {
     assert.doesNotMatch(feed.message, /can0/);
   });
 });
+
+describe('review of 8733f3c: nightly silences, gateways dying over seconds, and connections', () => {
+  /**
+   * Paths [{ path, source, every, dieAt, phase }] sampled every `every` ms
+   * (from `phase` after T0) until `dieAt`, a tick every five seconds; what
+   * opened after `from`, and when.
+   */
+  function simulate(list, from, to) {
+    const engine = newEngine();
+    const opened = [];
+    const open = new Set();
+    for (let t = T0; t <= to; t += SECOND) {
+      for (const item of list) {
+        if (t < item.dieAt && t - T0 >= (item.phase || 0) && (t - T0 - (item.phase || 0)) % item.every === 0) {
+          engine.ingest(item.path, 12 + ((t / item.every) % 5) * 0.01, t, item.source);
+        }
+      }
+      if (t % (5 * SECOND) !== 0) continue;
+      engine.tick(t);
+      const now = new Set(detectors(engine));
+      for (const key of now) if (!open.has(key) && t >= from) opened.push([key, t - from]);
+      open.clear();
+      for (const key of now) open.add(key);
+    }
+    return { engine, opened };
+  }
+  const paths = (prefix, count, source, every, dieAt, phase = 0) =>
+    Array.from({ length: count }, (_, index) => ({
+      path: `electrical.${prefix}${index}.voltage`,
+      source: typeof source === 'function' ? source(index) : source,
+      every,
+      dieAt,
+      phase
+    }));
+  const D = T0 + 2 * HOUR;
+
+  it('does not report the nightly silence of a sender whose evenings raised its interval', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const random = noise(7);
+    // 10 s from 08:00 to 20:00, then 2 to 40 min apart until midnight, then
+    // nothing until 08:00: three days.
+    const times = [];
+    for (let day = 0; day < 3; day += 1) {
+      const base = T0 + day * 24 * HOUR;
+      for (let at = base; at < base + 12 * HOUR; at += 10 * SECOND) times.push(at);
+      for (let at = base + 12 * HOUR; at < base + 16 * HOUR; ) {
+        at += Math.round((2 + 38 * (0.5 + 0.5 * random())) * 60) * SECOND;
+        if (at < base + 16 * HOUR) times.push(at);
+      }
+    }
+    const nights = [];
+    let index = 0;
+    let open = false;
+    for (let t = T0; t <= T0 + 3 * 24 * HOUR; t += 5 * SECOND) {
+      while (index < times.length && times[index] <= t) {
+        engine.ingest(path, 12.8 + (index % 5) * 0.01, times[index]);
+        index += 1;
+      }
+      engine.tick(t);
+      const now = detectors(engine).includes(`dropout:${path}`);
+      const hour = new Date(t).getUTCHours();
+      if (now && !open && hour < 8) nights.push(Math.floor((t - T0) / (24 * HOUR)));
+      open = now;
+    }
+    // The first night is reported (its silence is longer than anything the
+    // sender came back from); the next ones are its rhythm.
+    assert.deepEqual(nights, [0]);
+  });
+
+  it('does not take a slow path\'s last sample, a few seconds after the rest went quiet, for a live connection', () => {
+    const fast = paths('fast', 12, (index) => `gw.${index}`, SECOND, D);
+    for (const slow of [
+      // one path every 55 s, its last sample 12 s after the others stopped
+      paths('slow', 1, 'gw.50', 55 * SECOND, D + 13 * SECOND, 7 * SECOND),
+      // two every 10 s, the last 12 s after
+      paths('slow', 2, (index) => `gw.6${index}`, 10 * SECOND, D + 13 * SECOND, 2 * SECOND)
+    ]) {
+      const { opened } = simulate([...fast, ...slow], D, D + 3 * MINUTE);
+      const dropouts = opened.filter(([key]) => key.startsWith('dropout:'));
+      const feed = opened.find(([key]) => key === 'feed:feed');
+      assert.deepEqual(dropouts, [], `${slow.length} slow: no dropouts`);
+      assert.ok(feed && feed[1] <= 35 * SECOND, `${slow.length} slow: the silent feed at once (${feed && feed[1] / SECOND} s)`);
+    }
+  });
+
+  it('does not take a raised path seen a few seconds after the rest went quiet for a live connection', () => {
+    const engine = newEngine();
+    const fast = Array.from({ length: 12 }, (_, index) => [`electrical.fast${index}.voltage`, `gw.${index}`]);
+    const raised = ['environment.raised.temperature', 'gw.70'];
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [...fast, raised].map(([path, source]) => [path, 12, source]));
+    for (const gap of [60, 120, 240, 480, 960, 1920]) {
+      t = run(engine, t, t + gap * SECOND, SECOND, () => fast.map(([path, source]) => [path, 12, source]));
+      engine.ingest(raised[0], 12, t, raised[1]);
+    }
+    t = run(engine, t, t + 10 * MINUTE, SECOND, () => fast.map(([path, source]) => [path, 12, source]));
+    // The fast paths stop; the raised one sends its usual sample 5 s later.
+    const died = t;
+    engine.ingest(raised[0], 12, t + 5 * SECOND, raised[1]);
+    let feedAt;
+    for (let now = t; now < t + 5 * MINUTE && feedAt === undefined; now += 5 * SECOND) {
+      engine.tick(now);
+      if (detectors(engine).includes('feed:feed')) feedAt = now;
+      assert.ok(!detectors(engine).some((key) => key.startsWith('dropout:electrical.fast')), 'no dropouts of the fast paths');
+    }
+    assert.ok(feedAt !== undefined && feedAt - died <= 35 * SECOND, `the silent feed at once (${feedAt === undefined ? 'never' : (feedAt - died) / SECOND} s)`);
+  });
+
+  it('still takes a slow path that keeps reporting for a live connection', () => {
+    const { opened, engine } = simulate(
+      [...paths('fast', 12, (index) => `gw.${index}`, SECOND, D), ...paths('live', 1, 'gw.90', 10 * SECOND, Infinity, 3 * SECOND)],
+      D,
+      D + 5 * MINUTE
+    );
+    assert.equal(opened.filter(([key]) => key === 'feed:feed').length, 0, 'no silent feed');
+    assert.equal(detectors(engine).filter((key) => key.startsWith('dropout:')).length, 12);
+  });
+
+  it('reports the connection that went quiet now, not a group that died an hour before', () => {
+    for (const staleCount of [6, 5]) {
+      const stale = paths('w', staleCount, (index) => `wx.${index}`, SECOND, T0 + 50 * MINUTE);
+      const gateway = paths('g', 5, (index) => `gw.${index}`, SECOND, D);
+      const live = paths('h', 4, (index) => `nmea.${index}`, SECOND, Infinity);
+      const { engine } = simulate([...stale, ...gateway, ...live], D, D + 5 * MINUTE);
+      const feed = engine.status().activeFindings.find((finding) => finding.detector === 'feed');
+      assert.ok(feed, `${staleCount} stale: a silent feed`);
+      // The gateway's paths, of the paths that were reporting when it went
+      // quiet; the stale group keeps its own dropouts.
+      assert.match(feed.message, /^5 of 9 /, `${staleCount} stale`);
+      assert.match(feed.message, /gw\.0/);
+      assert.doesNotMatch(feed.message, /wx\./);
+      assert.deepEqual(
+        detectors(engine).filter((key) => key.startsWith('dropout:')).sort(),
+        stale.map((item) => `dropout:${item.path}`).sort()
+      );
+    }
+  });
+
+  it('keeps a reported silent feed whole when a second connection goes quiet', () => {
+    const first = paths('a', 10, (index) => `can0.${index}`, SECOND, D);
+    const second = paths('b', 4, (index) => `nmea.${index}`, SECOND, D + 30 * MINUTE);
+    const live = paths('c', 4, (index) => `ais.${index}`, SECOND, Infinity);
+    const { engine, opened } = simulate([...first, ...second, ...live], D, D + 40 * MINUTE);
+    assert.deepEqual(opened.map(([key]) => key), ['feed:feed']);
+    const feed = engine.status().activeFindings.find((finding) => finding.detector === 'feed');
+    assert.match(feed.message, /^14 of 18 /);
+  });
+
+  it('reports a connection that goes quiet after a larger group whose connection still reports', () => {
+    // Eight can0 sensors die while a ninth on can0 reports; an hour later
+    // can1 goes quiet as a whole.
+    const { engine, opened } = simulate(
+      [
+        ...paths('a', 8, (index) => `can0.${index}`, SECOND, T0 + 40 * MINUTE),
+        ...paths('live', 1, 'can0.50', SECOND, Infinity),
+        ...paths('b', 6, (index) => `can1.${index}`, SECOND, D)
+      ],
+      D,
+      D + 3 * MINUTE
+    );
+    assert.deepEqual(opened.map(([key]) => key), ['feed:feed']);
+    const feed = engine.status().activeFindings.find((finding) => finding.detector === 'feed');
+    assert.match(feed.message, /^6 of 7 .*can1\.0/);
+    // The can0 sensors keep their own dropouts.
+    assert.equal(detectors(engine).filter((key) => key.startsWith('dropout:electrical.a')).length, 8);
+  });
+
+  it('tells connections apart by everything before the last dot of the source', () => {
+    const { engine } = simulate(
+      [...paths('c0', 3, (index) => `n2k.can0.${index}`, SECOND, Infinity), ...paths('c1', 8, (index) => `n2k.can1.${index}`, SECOND, D)],
+      D,
+      D + 2 * MINUTE
+    );
+    assert.deepEqual(detectors(engine), ['feed:feed']);
+    const feed = engine.status().activeFindings.find((finding) => finding.detector === 'feed');
+    assert.match(feed.message, /n2k\.can1\.0/);
+    assert.doesNotMatch(feed.message, /n2k\.can0/);
+  });
+
+  it('reports paths with no source as a silent feed when the one still heard is not convincingly live', () => {
+    const { opened } = simulate(
+      [...paths('n', 9, undefined, SECOND, D), ...paths('s', 1, undefined, 20 * SECOND, D + 9 * SECOND, 8 * SECOND)],
+      D,
+      D + 3 * MINUTE
+    );
+    assert.deepEqual(opened.filter(([key]) => key.startsWith('dropout:')), []);
+    const feed = opened.find(([key]) => key === 'feed:feed');
+    assert.ok(feed && feed[1] <= 35 * SECOND, `the silent feed at once (${feed && feed[1] / SECOND} s)`);
+  });
+
+  it('drops a longest gap an older save may have learned from an outage', () => {
+    const path = 'environment.inside.cyc.temperature';
+    const rand = noise(61);
+    const learn = newEngine();
+    const t0 = run(learn, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 293 + 0.05 * rand()]]);
+    for (const [legacy, bound] of [
+      [true, 90 * MINUTE],
+      [false, 72 * HOUR + 10 * MINUTE]
+    ]) {
+      // A save in which the settled path's longest gap is two days: from an
+      // older version (an outage, or its rhythm - not known), or from this
+      // one (its rhythm).
+      const saved = JSON.parse(JSON.stringify(learn.exportState(t0)));
+      const item = saved.paths.find((entry) => entry.path === path);
+      assert.equal(item.settled, true);
+      item.longestGap = 48 * HOUR;
+      if (legacy) delete saved.rhythmGaps;
+      else assert.equal(saved.rhythmGaps, true);
+      const engine = newEngine();
+      assert.equal(engine.importState(saved, t0), true);
+      // It slows to one sample every 5 min for 4 h, then dies.
+      const start = t0;
+      let t = run(engine, t0, t0 + 4 * HOUR, SECOND, (at) => ((at - start) % (5 * MINUTE) === 0 ? [[path, 293 + 0.05 * rand()]] : []));
+      const died = t;
+      let at;
+      for (; t < died + 73 * HOUR && at === undefined; t += MINUTE) {
+        engine.tick(t);
+        if (detectors(engine).includes(`dropout:${path}`)) at = t;
+      }
+      assert.ok(at !== undefined && at - died <= bound, `${legacy ? 'older' : 'this'} save: death after ${at === undefined ? 'never' : ((at - died) / HOUR).toFixed(2)} h`);
+      if (!legacy) assert.ok(at - died > 71 * HOUR, 'this version\'s save keeps the rhythm it learned');
+    }
+  });
+});

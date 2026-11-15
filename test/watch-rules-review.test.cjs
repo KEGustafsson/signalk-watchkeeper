@@ -1310,7 +1310,7 @@ describe('review of 58a9678: comparisons, negations and what a rule says is norm
     }
     // Said back, so the operator sees which side alerts.
     const normal = read('battery voltage should stay below 14 V');
-    assert.match(normal.reading, /"should stay below 14 v" says what is normal/);
+    assert.match(normal.reading, /"should stay below 14 V" says what is normal/);
     assert.equal(describeRule(normal.rule), 'Warn when House battery voltage is at least 14.00 V');
     assert.equal(read('battery voltage should not exceed 14 V').reading, undefined, 'a limit needs no note');
   });
@@ -1321,8 +1321,8 @@ describe('review of 58a9678: comparisons, negations and what a rule says is norm
       ['battery voltage can be below 12 V', /"can be"/],
       ['battery voltage will be above 14 V', /"will be"/],
       ['battery voltage would be above 14 V', /"would be"/],
-      // "Tell me if it should drop below 12 V" may be the alert itself.
-      ['tell me if battery voltage should drop below 12 V', /"should drop below" may say when to alert or what is normal/],
+      // "It should drop below 12 V" may be the alert itself.
+      ['battery voltage should drop below 12 V', /"should drop below" may say when to alert or what is normal/],
       ['battery voltage must exceed 12 V', /"must exceed" may say when to alert/]
     ]) {
       const result = parseRule(text, BOAT);
@@ -1333,5 +1333,105 @@ describe('review of 58a9678: comparisons, negations and what a rule says is norm
     const guarded = parseRule('coolant above 95 °C while the engine revolutions should be above 600 rpm', BOAT);
     assert.equal(guarded.ok, false);
     assert.match(guarded.reason, /a "while" says when the watch applies/);
+  });
+});
+
+describe('review of 8733f3c: a "should" after "if", modal words in names, and the read-back', () => {
+  const BOAT = [
+    ...VESSEL,
+    { path: 'tanks.fuel.1.currentLevel', displayName: 'Jerry can', role: 'watching' }
+  ];
+  const read = (text) => parseRule(text, BOAT);
+
+  it('reads a "should" after "tell me if" as when to alert', () => {
+    for (const [text, path, op, value] of [
+      ['alert me if the battery voltage should be below 12 V', 'electrical.batteries.house.voltage', 'below', 12],
+      ['let me know if coolant should be above 95 °C', 'propulsion.main.temperature', 'above', 368.15],
+      ['alert me if the jerry can should be below 20 %', 'tanks.fuel.1.currentLevel', 'below', 0.2],
+      // The same as "should ever be below" and "should drop below" there.
+      ['alert if battery voltage should ever be below 12 V', 'electrical.batteries.house.voltage', 'below', 12],
+      ['tell me if battery voltage should drop below 12 V', 'electrical.batteries.house.voltage', 'below', 12],
+      ['warn me when the battery voltage should exceed 14 V', 'electrical.batteries.house.voltage', 'above', 14],
+      ['if the battery voltage should be below 12 V, tell me', 'electrical.batteries.house.voltage', 'below', 12],
+      // A limit with "not" keeps its comparison, as without "if".
+      ['alert me if battery voltage should not exceed 14 V', 'electrical.batteries.house.voltage', 'above', 14]
+    ]) {
+      const result = read(text);
+      assert.equal(result.ok, true, `${text}: ${result.reason}`);
+      assert.deepEqual([result.rule.path, result.rule.op, Number(result.rule.value.toFixed(4))], [path, op, value], text);
+    }
+    assert.equal(read('alert me if the battery voltage should be below 12 V').reading, '"should be below 12 V" follows "if" or "when", so it is when to alert.');
+    // Without "if", what is normal, as before.
+    assert.equal(read('the battery voltage should be below 12 V').rule.op, 'atLeast');
+  });
+
+  it('refuses a requirement after "tell me if" that has no conditional sense, and does not pass it on', () => {
+    for (const text of [
+      'alert me if the house battery must stay above 12 V',
+      'alert me if battery voltage needs to be at least 12 V',
+      'tell me if battery voltage should stay above 12 V'
+    ]) {
+      const result = read(text);
+      assert.equal(result.ok, false, text);
+      assert.equal(result.terminal, true, text);
+      assert.match(result.reason, /says what is normal, but it follows "if" or "when"/, text);
+    }
+  });
+
+  it('does not take a modal word that ends a name for a modal', () => {
+    for (const [text, op] of [
+      ['jerry can below 20 %', 'below'],
+      ['the jerry can is below 20 %', 'below'],
+      ['the jerry can is not below 20 %', 'atLeast'],
+      ['jerry can stays above 20 %', 'above']
+    ]) {
+      const result = read(text);
+      assert.equal(result.ok, true, `${text}: ${result.reason}`);
+      assert.deepEqual([result.rule.path, result.rule.op], ['tanks.fuel.1.currentLevel', op], text);
+    }
+    // With a verb after it, it is a modal still.
+    const modal = read('the jerry can will be below 20 %');
+    assert.equal(modal.ok, false);
+    assert.match(modal.reason, /"will be" does not say whether/);
+    // A bare "can" before the comparison is no modal, a name or not.
+    assert.doesNotMatch(String(read('the fuel can is below 20 %').reason), /does not say whether/);
+  });
+
+  it('marks the refusals of an ambiguous reading as not for the model', () => {
+    for (const text of [
+      'battery voltage should drop below 12 V',
+      'battery voltage must exceed 12 V',
+      'battery voltage may be above 14 V',
+      'battery voltage can exceed 14 V',
+      'battery voltage is not not above 14 V',
+      'coolant above 95 °C while the engine revolutions should be above 600 rpm'
+    ]) {
+      const result = read(text);
+      assert.equal(result.ok, false, text);
+      assert.equal(result.terminal, true, text);
+    }
+  });
+
+  it('quotes the operator\'s own words, verb included, in the read-back', () => {
+    assert.equal(read('battery voltage must stays above 12 V').reading, '"must stays above 12 V" says what is normal, so this watches for the opposite.');
+    assert.equal(read('Coolant should be below 95 °C.').reading, '"should be below 95 °C" says what is normal, so this watches for the opposite.');
+    const guarded = read('coolant above 95 °C while the engine revolutions should be above 600 RPM');
+    assert.match(guarded.reason, /"should be above 600 RPM" says what is normal/);
+  });
+
+  it('tells the model how the parser reads a "should" after "tell me if"', async () => {
+    let sent;
+    await assistRule(
+      'tell me if the house battery should drop below 12 V',
+      [{ path: 'electrical.batteries.house.voltage', units: 'V' }],
+      { baseUrl: 'http://ollama.test:11434', model: 'qwen3:0.6b' },
+      {
+        fetchImpl: async (url, init) => {
+          sent = JSON.parse(init.body);
+          return new Response(JSON.stringify({ message: { content: '{}' } }), { status: 200 });
+        }
+      }
+    );
+    assert.match(sent.messages[0].content, /After "tell me if", "alert when" and the like, "should" is part of when to alert/);
   });
 });

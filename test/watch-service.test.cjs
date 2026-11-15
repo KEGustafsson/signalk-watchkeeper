@@ -556,6 +556,44 @@ describe('stored settings and the write queue', () => {
     assert.doesNotMatch(JSON.stringify(reply.body), /nothing was saved/);
   });
 
+  it('says a change was saved when its redo after a restart found it stored, and the plugin then stops', async () => {
+    for (const [route, body] of [
+      ['POST /watch/rules/add', { rule: rule('r-b', 370) }],
+      ['POST /watch/rules/remove', { id: 'r-a' }],
+      ['POST /watch/rules/save', { rules: [rule('r-c', 380)] }]
+    ]) {
+      const host = createHost();
+      let plugin;
+      const saves = [];
+      host.savePluginOptions = (options, done) => {
+        saves.push(options);
+        if (saves.length === 1) {
+          // The server restarts the plugin on the options just written: the
+          // redo finds the change made, and puts those options back...
+          plugin.stop();
+          plugin.start({ ...options });
+          done();
+          return;
+        }
+        // ...and the plugin stops after the queue has answered, before the
+        // handler replies.
+        done();
+        Promise.resolve()
+          .then(() => {})
+          .then(() => plugin.stop());
+      };
+      const created = routesFor(host);
+      plugin = created.plugin;
+      plugin.start({ watchEnabled: true, watchRules: [rule('r-a')] });
+      const reply = recorder();
+      await created.routes[route]({ body }, reply);
+      assert.equal(saves.length, 2, route);
+      assert.equal(reply.statusCode, 503, route);
+      assert.match(reply.body.error.message, /change was saved/, route);
+      plugin.stop();
+    }
+  });
+
   it('sends no stopped plugin\'s lists when it stops right after a save', async () => {
     const cases = [];
     for (const depth of [1, 2]) {
