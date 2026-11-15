@@ -187,6 +187,23 @@ describe('migrateSettings', () => {
     assert.deepEqual(migrateSettings({ ruleAssistModel: 'qwen3:0.6b', ruleAssist: { ruleAssistEnabled: false } }).options, {
       ruleAssist: { ruleAssistEnabled: false, ruleAssistModel: 'qwen3:0.6b' }
     });
+    // A model already in the section, with the address still flat: the
+    // switch is set from it, so the form does not show the help as off
+    // (CodeRabbit's review of 220b520).
+    assert.deepEqual(
+      migrateSettings({ ollamaUrl: 'http://gpu.local:11434', ruleAssist: { ruleAssistModel: 'gemma3:1b' } }).options,
+      { ruleAssist: { ruleAssistModel: 'gemma3:1b', ollamaUrl: 'http://gpu.local:11434', ruleAssistEnabled: true } }
+    );
+    // The same with nothing flat at all.
+    assert.deepEqual(migrateSettings({ ruleAssist: { ruleAssistModel: 'gemma3:1b' } }).options, {
+      ruleAssist: { ruleAssistModel: 'gemma3:1b', ruleAssistEnabled: true }
+    });
+    assert.deepEqual(migrateSettings({ ruleAssist: { ruleAssistModel: '' } }).options, {
+      ruleAssist: { ruleAssistModel: '', ruleAssistEnabled: false }
+    });
+    // A switch the form stored is left alone.
+    const switched = { ruleAssist: { ruleAssistEnabled: false, ruleAssistModel: 'gemma3:1b' } };
+    assert.equal(migrateSettings(switched).options, switched);
     // No flat model, no switch added.
     assert.deepEqual(migrateSettings({ ollamaUrl: 'http://gpu.local:11434' }).options, {
       ruleAssist: { ollamaUrl: 'http://gpu.local:11434' }
@@ -197,7 +214,9 @@ describe('migrateSettings', () => {
       { ruleAssistModel: '' },
       { ruleAssistModel: 'qwen3:0.6b', ruleAssist: { ruleAssistEnabled: false } },
       { ruleAssistModel: 'a', ruleAssist: { ruleAssistModel: 'b' } },
-      { ruleAssistModel: 'a', ruleAssist: { ruleAssistModel: '' } }
+      { ruleAssistModel: 'a', ruleAssist: { ruleAssistModel: '' } },
+      { ollamaUrl: 'http://gpu.local:11434', ruleAssist: { ruleAssistModel: 'gemma3:1b' } },
+      { ruleAssist: { ruleAssistModel: 'gemma3:1b' } }
     ]) {
       assert.deepEqual(readSettings(migrateSettings(stored).options), readSettings(stored), JSON.stringify(stored));
     }

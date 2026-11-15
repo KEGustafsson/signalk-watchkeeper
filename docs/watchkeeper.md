@@ -811,7 +811,8 @@ switch, the watch rules and keys the plugin does not know stay as they are.
 Before the AI help had a switch, a model named meant on: a flat
 `ruleAssistModel` becomes `ruleAssistEnabled: true` with that model, and a
 blank one `ruleAssistEnabled: false`, with the blank dropped so that
-switching on later offers the default model. The server log gets one line
+switching on later offers the default model. A model already in the
+section with no switch stored sets the switch the same way. The server log gets one line
 naming the moved settings:
 
 ```
