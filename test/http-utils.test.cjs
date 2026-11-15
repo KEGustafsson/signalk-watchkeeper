@@ -134,12 +134,23 @@ describe('describeFetchFailure', () => {
       'http://admin:pa#ss@boat.example',
       'http://admin:pa?ss@boat.example',
       'http://user:sec retpw@boat.example',
-      '//u:secretpw@boat.example'
+      '//u:secretpw@boat.example',
+      'http://admin:p@s/secret@boat.example:3000',
+      'http://admin:se cr@t/pw@boat.example'
     ]) {
       const { message } = describeFetchFailure(failed(`could not reach ${quoted}/api`));
       assert.doesNotMatch(message, /secret|pa\/ss|pa#ss|pa\?ss|retpw|admin|sec /, `${quoted} -> ${message}`);
       assert.match(message, /boat\.example/);
     }
+  });
+
+  it('redacts each of two quoted URLs on its own', () => {
+    const { message } = describeFetchFailure(
+      failed('tried http://a:secret1@one.example/x then http://b:secret2@two.example/y')
+    );
+    assert.doesNotMatch(message, /secret/);
+    assert.match(message, /one\.example/);
+    assert.match(message, /two\.example/);
   });
 
   it('keeps a cause code only when it looks like one', () => {
