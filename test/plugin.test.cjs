@@ -58,18 +58,14 @@ describe('the plugin', () => {
     }
   });
 
-  it('describes its settings, with the watch off and the parser alone by default', () => {
-    const { properties } = createPlugin(createHost()).schema();
-    assert.equal(properties.watchEnabled.default, false);
-    assert.equal(properties.watchSensitivity.default, 'normal');
-    assert.equal(properties.ruleAssistModel.default, '');
-    assert.equal(properties.ollamaUrl.default, 'http://localhost:11434');
-    assert.match(properties.watchNotifications.description, /notifications\.watchkeeper\./);
-    for (const [name, property] of Object.entries(properties)) {
-      assert.ok(property.title, `${name} has a title`);
-      assert.ok('default' in property, `${name} has a default`);
-    }
-    assert.deepEqual(createPlugin(createHost()).uiSchema(), { historyApiKey: { 'ui:widget': 'password' } });
+  it('describes its settings in sections, with the watch off and the built-in reader alone by default', () => {
+    const plugin = createPlugin(createHost());
+    const schema = plugin.schema();
+    assert.deepEqual(Object.keys(schema.properties), ['watchEnabled', 'alerts', 'watching', 'ruleAssist', 'replay', 'advanced']);
+    assert.equal(schema.properties.watchEnabled.default, false);
+    assert.equal(schema.properties.ruleAssist.properties.ruleAssistEnabled.default, false);
+    assert.match(schema.description, /only the first switch/i);
+    assert.match(plugin.uiSchema().replay.historyApiKey['ui:widget'], /^password$/);
   });
 
   it('registers its routes once, and serves nothing while stopped', async () => {
@@ -155,7 +151,7 @@ describe('the plugin', () => {
   });
 });
 
-describe('the Ollama server for reading rules', () => {
+describe('the Ollama server for wordings the built-in reader cannot read', () => {
   /** Compile a rule the parser cannot read, with `options`, recording every fetch. */
   async function compileWith(options, fetchImpl) {
     const asked = [];
@@ -188,7 +184,7 @@ describe('the Ollama server for reading rules', () => {
   it('asks nothing, and says why, for a URL with credentials in it', async () => {
     const { asked, response } = await compileWith({ ollamaUrl: 'http://user:s3cret@gpu.local:11434' });
     assert.equal(asked.length, 0);
-    assert.match(response.body.assistNote, /ollamaUrl/);
+    assert.match(response.body.assistNote, /Rules in your own words → Ollama server address/);
     assert.match(response.body.assistNote, /user name or password/);
     assert.doesNotMatch(JSON.stringify(response.body), /s3cret/);
   });
@@ -196,7 +192,7 @@ describe('the Ollama server for reading rules', () => {
   it('refuses a server without a scheme instead of asking localhost in its place', async () => {
     const { asked, response } = await compileWith({ ollamaUrl: 'gpu.local:11434' });
     assert.equal(asked.length, 0);
-    assert.match(response.body.assistNote, /ollamaUrl/);
+    assert.match(response.body.assistNote, /Rules in your own words → Ollama server address/);
     assert.match(response.body.assistNote, /http:\/\//);
   });
 
@@ -204,7 +200,7 @@ describe('the Ollama server for reading rules', () => {
     for (const ollamaUrl of ['http://gpu.local:11434/?x=1', 'http://gpu.local:11434#top', 'http://gpu.local:11434?', 'ftp://gpu.local']) {
       const { asked, response } = await compileWith({ ollamaUrl });
       assert.equal(asked.length, 0, ollamaUrl);
-      assert.match(response.body.assistNote, /ollamaUrl/, ollamaUrl);
+      assert.match(response.body.assistNote, /Rules in your own words → Ollama server address/, ollamaUrl);
     }
   });
 
@@ -221,7 +217,7 @@ describe('the Ollama server for reading rules', () => {
     const plugin = createPlugin(host, { fetchImpl: async () => new Response('{}') });
     plugin.start({ watchEnabled: true, ollamaUrl: 'gpu.local:11434', ruleAssistModel: 'qwen3:0.6b' });
     try {
-      assert.match(statuses[statuses.length - 1], /not sent to qwen3:0\.6b.*ollamaUrl/);
+      assert.match(statuses[statuses.length - 1], /not sent to qwen3:0\.6b.*Rules in your own words → Ollama server address/);
       assert.equal(errors.length, 1);
     } finally {
       plugin.stop();
@@ -233,7 +229,7 @@ describe('the Ollama server for reading rules', () => {
     const other = createPlugin(quiet, { fetchImpl: async () => new Response('{}') });
     other.start({ watchEnabled: true, ollamaUrl: 'gpu.local:11434' });
     other.stop();
-    assert.doesNotMatch(said.join(' '), /ollamaUrl/);
+    assert.doesNotMatch(said.join(' '), /Rules in your own words → Ollama server address/);
   });
 
   it('names the cause when Ollama is not running there', async () => {
@@ -250,6 +246,123 @@ describe('the Ollama server for reading rules', () => {
     });
     assert.doesNotMatch(response.body.assistNote, /s3cret/);
     assert.match(response.body.assistNote, /http:\/\/gpu\.local:11434\/api\/chat/);
+  });
+});
+
+describe('settings stored in sections', () => {
+  /** Options as the admin page stores them, with every section. */
+  const sectioned = () => ({
+    watchEnabled: true,
+    alerts: { watchNotifications: true, watchSound: false },
+    watching: {
+      watchSensitivity: 'high',
+      watchLearningMinutes: 30,
+      watchDefaultExclusions: true,
+      watchExcludePaths: [],
+      watchCounterPaths: []
+    },
+    ruleAssist: { ruleAssistEnabled: false, ollamaUrl: 'http://gpu.local:11434', ruleAssistModel: 'qwen3:0.6b' },
+    replay: { historyServerUrl: 'http://nas.local:3000', historyApiKey: 'k', historyProvider: '', historyTimeoutMs: 30000 },
+    advanced: { watchMaxPaths: 1500 }
+  });
+
+  /** A running plugin on `options`, its routes, every fetch and every save. */
+  function startWith(options, respond) {
+    const host = createHost();
+    const saved = [];
+    host.savePluginOptions = (stored, done) => {
+      saved.push(JSON.parse(JSON.stringify(stored)));
+      done();
+    };
+    let onDelta;
+    host.subscriptionmanager = {
+      subscribe(command, unsubscribes, onError, callback) {
+        onDelta = callback;
+      }
+    };
+    const asked = [];
+    const plugin = createPlugin(host, {
+      fetchImpl: async (url, init) => {
+        asked.push(String(url));
+        return respond ? respond(url, init) : new Response(JSON.stringify({ message: { content: '{}' } }), { status: 200 });
+      }
+    });
+    const routes = routesOf(plugin);
+    plugin.start(options);
+    onDelta({ updates: [{ values: [{ path: 'propulsion.main.temperature', value: 353 }] }] });
+    return { host, plugin, routes, saved, asked };
+  }
+
+  it('keeps every section as it was when a rule is added or removed, and adds no flat keys', async () => {
+    const options = sectioned();
+    const { plugin, routes, saved } = startWith(options);
+    try {
+      const rule = { id: 'r-hot', text: 'coolant above 95', path: 'propulsion.main.temperature', op: 'above', value: 368, forSeconds: 0, severity: 'warn' };
+      const added = recorder();
+      await routes['POST /watch/rules/add']({ body: { rule } }, added);
+      assert.equal(added.statusCode, 200);
+      const removed = recorder();
+      await routes['POST /watch/rules/remove']({ body: { id: 'r-hot' } }, removed);
+      assert.equal(removed.statusCode, 200);
+      const replaced = recorder();
+      await routes['POST /watch/rules/save']({ body: { rules: [rule] } }, replaced);
+      assert.equal(replaced.statusCode, 200);
+
+      assert.equal(saved.length, 3);
+      for (const stored of saved) {
+        const { watchRules, ...rest } = stored;
+        assert.deepEqual(rest, sectioned());
+        assert.ok(Array.isArray(watchRules));
+      }
+      assert.deepEqual(saved[0].watchRules.map((item) => item.id), ['r-hot']);
+      assert.deepEqual(saved[1].watchRules, []);
+      assert.deepEqual(Object.keys(saved[2]).sort(), ['advanced', 'alerts', 'replay', 'ruleAssist', 'watchEnabled', 'watchRules', 'watching']);
+      // The options it was started with are not changed in place.
+      assert.deepEqual(options, sectioned());
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('reads the sections: the watch runs, and a model is asked only with the AI help switched on', async () => {
+    const compile = async (ruleAssist) => {
+      const { host, plugin, routes, asked } = startWith({ ...sectioned(), ruleAssist });
+      try {
+        assert.match(host.statuses.at(-1), /watching/);
+        const response = recorder();
+        await routes['POST /watch/rules/compile']({ body: { text: 'shout if the engine is cooking' } }, response);
+        return { asked, body: response.body };
+      } finally {
+        plugin.stop();
+      }
+    };
+    const off = await compile({ ruleAssistEnabled: false, ollamaUrl: 'http://gpu.local:11434', ruleAssistModel: 'qwen3:0.6b' });
+    assert.equal(off.asked.length, 0);
+    assert.equal(off.body.assist, 'off');
+
+    const on = await compile({ ruleAssistEnabled: true, ollamaUrl: 'http://gpu.local:11434', ruleAssistModel: 'qwen3:0.6b' });
+    assert.deepEqual(on.asked, ['http://gpu.local:11434/api/chat']);
+
+    const noModel = await compile({ ruleAssistEnabled: true, ollamaUrl: 'http://gpu.local:11434', ruleAssistModel: '' });
+    assert.equal(noModel.asked.length, 0);
+    assert.equal(noModel.body.assist, 'off');
+
+    // A refused address is reported only when the help is on.
+    const quiet = startWith({ ...sectioned(), ruleAssist: { ruleAssistEnabled: false, ollamaUrl: 'gpu.local:11434', ruleAssistModel: 'qwen3:0.6b' } });
+    quiet.plugin.stop();
+    assert.doesNotMatch(quiet.host.statuses.join(' '), /Ollama server address/);
+  });
+
+  it('replays from the history server its section names', async () => {
+    const { plugin, routes, asked } = startWith(sectioned(), async () => new Response('[]', { status: 200 }));
+    try {
+      const response = recorder();
+      await routes['POST /watch/replay']({ headers: {}, body: { duration: 'PT1H' } }, response);
+      assert.ok(asked.length >= 1);
+      assert.ok(asked.every((url) => url.startsWith('http://nas.local:3000/')), asked.join(', '));
+    } finally {
+      plugin.stop();
+    }
   });
 });
 
@@ -337,5 +450,272 @@ describe('write access on a secured server', () => {
         plugin.stop();
       }
     }
+  });
+});
+
+describe('settings saved flat by an earlier version', () => {
+  /** Flat options, as every version before the sections stored them. */
+  const flat = () => ({
+    watchEnabled: true,
+    watchSensitivity: 'high',
+    watchSound: true,
+    ollamaUrl: 'http://gpu.local:11434',
+    ruleAssistModel: 'qwen3:0.6b',
+    historyServerUrl: 'http://nas.local:3000',
+    watchMaxPaths: 200,
+    watchRules: []
+  });
+  const migrated = () => ({
+    watchEnabled: true,
+    watchRules: [],
+    alerts: { watchSound: true },
+    watching: { watchSensitivity: 'high' },
+    ruleAssist: { ollamaUrl: 'http://gpu.local:11434', ruleAssistModel: 'qwen3:0.6b', ruleAssistEnabled: true },
+    replay: { historyServerUrl: 'http://nas.local:3000' },
+    advanced: { watchMaxPaths: 200 }
+  });
+
+  /** Let the options write queue run what start() put on it. */
+  const settle = async () => {
+    for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  function hostWith(save) {
+    const host = createHost();
+    const saved = [];
+    host.savePluginOptions = (stored, done) => {
+      saved.push(JSON.parse(JSON.stringify(stored)));
+      (save || ((callback) => callback()))(done);
+    };
+    // The watch sees one path, so a rule has something to be about.
+    host.subscriptionmanager = {
+      subscribe(command, unsubscribes, onError, callback) {
+        callback({ updates: [{ values: [{ path: 'propulsion.main.temperature', value: 353 }] }] });
+      }
+    };
+    const asked = [];
+    const plugin = createPlugin(host, {
+      fetchImpl: async (url) => {
+        asked.push(String(url));
+        return new Response(JSON.stringify({ message: { content: '{}' } }), { status: 200 });
+      }
+    });
+    return { host, plugin, routes: routesOf(plugin), saved, asked };
+  }
+
+  /** Ask for a rule the built-in reader cannot read: the model is asked only with the AI help on. */
+  const compile = async (routes) => {
+    const response = recorder();
+    await routes['POST /watch/rules/compile']({ body: { text: 'shout if the engine is cooking' } }, response);
+    return response.body;
+  };
+
+  it('moves them into their sections on start and stores that once, so the form shows them', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    const { plugin, routes, saved, asked } = hostWith();
+    const options = flat();
+    plugin.start(options);
+    try {
+      await settle();
+      assert.equal(saved.length, 1);
+      assert.deepEqual(saved[0], migrated());
+      assert.deepEqual(options, flat());
+      const lines = logged.mock.calls.map((call) => call.arguments.join(' '));
+      assert.deepEqual(lines, [
+        'signalk-watchkeeper: moved settings saved by an earlier version into their sections: watchSound, watchSensitivity, ollamaUrl, ruleAssistModel, historyServerUrl, watchMaxPaths.'
+      ]);
+      // Running on the same settings: the model it named is still asked.
+      await compile(routes);
+      assert.deepEqual(asked, ['http://gpu.local:11434/api/chat']);
+      // A rule saved later keeps the sections and brings back no flat key.
+      const rule = { id: 'r-hot', text: 'coolant above 95', path: 'propulsion.main.temperature', op: 'above', value: 368, forSeconds: 0, severity: 'warn' };
+      const added = recorder();
+      await routes['POST /watch/rules/add']({ body: { rule } }, added);
+      assert.equal(added.statusCode, 200);
+      assert.deepEqual({ ...saved[1], watchRules: [] }, migrated());
+      assert.deepEqual(saved[1].watchRules.map((item) => item.id), ['r-hot']);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('turns an old blank model into the AI help switched off', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    const { plugin, routes, saved, asked } = hostWith();
+    plugin.start({ watchEnabled: true, ollamaUrl: 'http://gpu.local:11434', ruleAssistModel: '' });
+    try {
+      await settle();
+      assert.deepEqual(saved, [{ watchEnabled: true, ruleAssist: { ollamaUrl: 'http://gpu.local:11434', ruleAssistEnabled: false } }]);
+      assert.equal((await compile(routes)).assist, 'off');
+      assert.equal(asked.length, 0);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('keeps a value already in its section over the flat one', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    const { plugin, saved } = hostWith();
+    plugin.start({ watchSensitivity: 'high', watchMaxPaths: 200, watching: { watchSensitivity: 'low' } });
+    try {
+      await settle();
+      assert.deepEqual(saved, [{ watching: { watchSensitivity: 'low' }, advanced: { watchMaxPaths: 200 } }]);
+      assert.match(logged.mock.calls[0].arguments[0], /watchMaxPaths; for watchSensitivity the value already in its section was kept\.$/);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('stores nothing, and says nothing, when nothing is flat', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    const { plugin, saved } = hostWith();
+    plugin.start(migrated());
+    plugin.stop();
+    plugin.start({});
+    try {
+      await settle();
+      assert.equal(saved.length, 0);
+      assert.equal(logged.mock.calls.length, 0);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('runs on the moved settings when they cannot be stored, and tries again on the next start', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    let fail = true;
+    const { plugin, routes, saved, asked } = hostWith((done) => done(fail ? new Error('disk full') : undefined));
+    plugin.start(flat());
+    try {
+      await settle();
+      assert.equal(saved.length, 1);
+      const lines = logged.mock.calls.map((call) => call.arguments.join(' '));
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /could not be stored \(disk full\); this is tried again on the next start\./);
+      await compile(routes);
+      assert.deepEqual(asked, ['http://gpu.local:11434/api/chat']);
+
+      fail = false;
+      plugin.stop();
+      plugin.start(flat());
+      await settle();
+      assert.equal(saved.length, 2);
+      assert.deepEqual(saved[1], migrated());
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('stores nothing when the plugin stops before the move gets its turn', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    const { plugin, saved } = hostWith();
+    plugin.start(flat());
+    plugin.stop();
+    await settle();
+    assert.equal(saved.length, 0);
+  });
+
+  it('makes the move on the restart options when it restarts while the move is being stored', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    let restarted = false;
+    let plugin;
+    const made = hostWith((done) => {
+      if (!restarted) {
+        restarted = true;
+        plugin.stop();
+        plugin.start({ ...flat(), watchSensitivity: 'low' });
+      }
+      done();
+    });
+    plugin = made.plugin;
+    plugin.start(flat());
+    try {
+      await settle();
+      assert.equal(made.saved.length, 2);
+      assert.deepEqual(made.saved[1], { ...migrated(), watching: { watchSensitivity: 'low' } });
+    } finally {
+      plugin.stop();
+    }
+  });
+});
+
+describe('the settings form for settings saved flat by an earlier version', () => {
+  const { settingsSchema } = require('../lib/settings.cjs');
+  const flat = () => ({
+    watchEnabled: false,
+    watchSensitivity: 'high',
+    watchSound: true,
+    watchExcludePaths: ['environment.inside'],
+    ollamaUrl: 'http://gpu.local:11434',
+    ruleAssistModel: 'gemma3:1b',
+    historyServerUrl: 'http://nas.local:3000',
+    watchMaxPaths: 200,
+    watchRules: []
+  });
+
+  /** A plugin that is never started, as Signal K keeps one that is off. */
+  function offPlugin(readPluginOptions) {
+    const host = createHost();
+    const saves = [];
+    host.savePluginOptions = (stored, done) => {
+      saves.push(stored);
+      done();
+    };
+    if (readPluginOptions !== undefined) host.readPluginOptions = readPluginOptions;
+    return { plugin: createPlugin(host, {}), saves };
+  }
+
+  it('shows the stored values while the plugin is off, before any start has moved them', () => {
+    const { plugin, saves } = offPlugin(() => ({ enabled: false, configuration: flat() }));
+    const { properties } = plugin.schema();
+    assert.equal(properties.watching.properties.watchSensitivity.default, 'high');
+    assert.deepEqual(properties.watching.properties.watchExcludePaths.default, ['environment.inside']);
+    assert.equal(properties.alerts.properties.watchSound.default, true);
+    // The model named before the switch existed: shown with the switch on.
+    assert.equal(properties.ruleAssist.properties.ruleAssistEnabled.default, true);
+    const [, on] = properties.ruleAssist.dependencies.ruleAssistEnabled.oneOf;
+    assert.equal(on.properties.ollamaUrl.default, 'http://gpu.local:11434');
+    assert.equal(on.properties.ruleAssistModel.default, 'gemma3:1b');
+    assert.equal(properties.replay.properties.historyServerUrl.default, 'http://nas.local:3000');
+    assert.equal(properties.advanced.properties.watchMaxPaths.default, 200);
+    // Everything not stored flat keeps its usual default.
+    const usual = settingsSchema().properties;
+    assert.equal(properties.watching.properties.watchLearningMinutes.default, usual.watching.properties.watchLearningMinutes.default);
+    assert.equal(properties.replay.properties.historyTimeoutMs.default, usual.replay.properties.historyTimeoutMs.default);
+    // Asking for the form writes nothing.
+    assert.deepEqual(saves, []);
+    assert.deepEqual(JSON.parse(JSON.stringify(plugin.schema())), plugin.schema());
+  });
+
+  it('reads the stored options each time the form is asked for', () => {
+    let configuration = flat();
+    const { plugin } = offPlugin(() => ({ enabled: false, configuration }));
+    assert.equal(plugin.schema().properties.watching.properties.watchSensitivity.default, 'high');
+    // Saved from the form: in the sections now, so the form is the usual one.
+    configuration = { watching: { watchSensitivity: 'high' } };
+    assert.deepEqual(plugin.schema(), settingsSchema());
+  });
+
+  it('is the usual form when the stored options are in sections, empty or cannot be read', () => {
+    const usual = settingsSchema();
+    const hosts = {
+      'in sections': () => ({ enabled: true, configuration: { watching: { watchSensitivity: 'high' }, advanced: { watchMaxPaths: 200 } } }),
+      'nothing stored': () => ({}),
+      'empty configuration': () => ({ enabled: false, configuration: {} }),
+      'returns nothing': () => undefined,
+      'returns null': () => null,
+      'returns a string': () => 'options',
+      'configuration not an object': () => ({ configuration: 'flat' }),
+      throws: () => {
+        throw new Error('EACCES');
+      },
+      'not a function': 'readPluginOptions'
+    };
+    for (const [name, readPluginOptions] of Object.entries(hosts)) {
+      const { plugin } = offPlugin(readPluginOptions);
+      assert.deepEqual(plugin.schema(), usual, name);
+    }
+    // A host without readPluginOptions at all.
+    assert.deepEqual(offPlugin().plugin.schema(), usual);
   });
 });

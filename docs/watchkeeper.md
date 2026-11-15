@@ -621,7 +621,8 @@ A rule is stored data, checked deterministically on every tick:
   guessing.
 
 **Reading what the parser cannot** (`lib/watch/rule-assist.cjs`), only if
-`ruleAssistModel` names a model:
+the AI help is switched on and `ruleAssistModel` names a model (see
+[Settings](#rules-in-your-own-words--optional-ai-help-ruleassist)):
 
 - The model gets the request and at most 25 candidate paths (the parser's
   alternatives first), each with its display unit. It is told the parser's
@@ -699,7 +700,7 @@ for the log** puts these lines on the clipboard.
 | All checks, all thresholds, all firing decisions | none |
 | Finding, incident and notification text | none (templates) |
 | Stored rules at watch time | none |
-| Reading a typed rule | none, unless the parser fails and `ruleAssistModel` names a model |
+| Reading a typed rule | none, unless the parser fails and the AI help is switched on with a model named |
 | Incident, "most unusual" and report text | none (the panel copies it as plain text) |
 | Learning from dismissals | none (a per-path threshold factor) |
 
@@ -776,24 +777,121 @@ never sees.
 
 ## Settings
 
+The form on **Server → Plugin Config → Watchkeeper** opens with one switch,
+**Turn on Watchkeeper** (`watchEnabled`), which is all most boats need; the
+rest is grouped into sections, each a nested object in the plugin's options:
+
+```json
+{
+  "watchEnabled": true,
+  "alerts": { "watchNotifications": true, "watchSound": false },
+  "watching": { "watchSensitivity": "normal", "watchLearningMinutes": 30, "watchDefaultExclusions": true, "watchExcludePaths": [], "watchCounterPaths": [] },
+  "ruleAssist": { "ruleAssistEnabled": false },
+  "replay": { "historyServerUrl": "", "historyApiKey": "", "historyProvider": "", "historyTimeoutMs": 30000 },
+  "advanced": { "watchMaxPaths": 1500 },
+  "watchRules": []
+}
+```
+
+`readSettings()` in `lib/settings.cjs` turns that into the flat settings the
+rest of the plugin reads. Inside a section a key keeps the name it had when
+the settings were flat, and a key a section does not hold is read from the
+top level, so options stored before the sections still work as they did.
+The plugin's own writes (the watch rules) change `watchRules` only and keep
+every section as it is.
+
+**Settings saved by an earlier version are moved into the sections on the
+first start, and shown in the form from the start even while the plugin is
+off.** The admin page's form shows only what the sections hold, so
+flat settings would appear as the defaults, and the form's first save would
+put those over them. On start, the plugin therefore moves each flat setting
+into its section, with its value unchanged, removes the flat key, and stores
+the result once through the same write queue as the watch rules. A value
+already in the section (written by the form) wins over the flat one. The
+switch, the watch rules and keys the plugin does not know stay as they are.
+Before the AI help had a switch, a model named meant on: a flat
+`ruleAssistModel` becomes `ruleAssistEnabled: true` with that model, and a
+blank one `ruleAssistEnabled: false`, with the blank dropped so that
+switching on later offers the default model. A model already in the
+section with no switch stored sets the switch the same way. The server log gets one line
+naming the moved settings:
+
+```
+signalk-watchkeeper: moved settings saved by an earlier version into their sections: watchSensitivity, ollamaUrl, ruleAssistModel.
+```
+
+Nothing is stored when nothing is flat, which is every start after the
+first. Nothing is stored while the plugin is stopped, either. If the server
+cannot store the result, the plugin runs on the moved settings, which are the
+same values, and the next start tries again.
+
+A plugin that is off is not started, so its flat settings stay where they
+are until it is turned on. The form shows them all the same: each time the
+admin page loads the plugin's settings, the plugin reads the stored options
+(`app.readPluginOptions()`) and makes each flat setting the default of its
+field, so the form shows the stored value and a save stores it in its
+section. The AI help switch is shown as the move would set it from the
+model. A stored value the field does not take (outside its range or
+choices, or of the wrong type) is not shown: the field keeps its usual
+default, its description says so, and a save stores that default. Loading
+the form writes nothing, and a server that cannot give the stored options
+gets the usual form.
+
+### Alerts (`alerts`)
+
+| Setting | In the form | Default | |
+| --- | --- | --- | --- |
+| `watchNotifications` | Send alerts as Signal K notifications | `true` | Publish findings under `notifications.watchkeeper.*`, at `warn` or `alert` - never `alarm` or `emergency`, which belong to real alarm sources |
+| `watchSound` | Sound on serious alerts | `false` | Add `sound` to the method of alert-level findings. Warnings are always visual only |
+
+### What to watch (`watching`)
+
+| Setting | In the form | Default | |
+| --- | --- | --- | --- |
+| `watchSensitivity` | Sensitivity | `normal` | How far from normal a value must move before it is reported: `low` (Calm – fewer alerts), `normal` or `high` (Sharp – more alerts); see the table under [Checks](#checks). Start at normal, and use the panel's replay to see what a setting would have raised over the last day before changing it |
+| `watchLearningMinutes` | Learning period (minutes) | `30` | Minimum observation before a new path can raise anything (1–1440). The learned baseline is saved, so this is paid once, not after every restart |
+| `watchDefaultExclusions` | Skip readings that move with the helm, wind and seabed | `true` | Skip the paths listed under [Skipped by default](#skipped-by-default): heading, course, speed, attitude, wind, depth, steering and similar change quickly by their nature. Position and fix quality are still read, by the GNSS integrity check |
+| `watchExcludePaths` | Also skip these paths | `[]` | More paths or patterns to skip: a path covers everything beneath it, `*` matches within one segment, `**` across segments (`environment.inside`, `propulsion.*.exhaustTemperature`, `**.signalStrength`) |
+| `watchCounterPaths` | Counters under other names | `[]` | Paths that only count up - engine hours, energy, pulses - under names the watch does not recognise (a plugin's own pulse or energy counter); they are not judged as levels or stuck sensors. Standard names (`runTime`, `fuel.used`, `lifetimeDischarge`, `energy…`, `log`, `…Today` and the like) are recognised already. A pattern covers the paths beneath it but not the measurements among them (a voltage, a level); list a path exactly to make it a counter regardless |
+
+### Rules in your own words – optional AI help (`ruleAssist`)
+
+Rules typed in the panel are read by the built-in parser, with no model. This
+section only decides whether a request the parser cannot read is passed on to
+a small model (see [Reading what the parser cannot](#your-own-watches-rules)).
+Ollama is not part of the plugin: it is installed and run separately.
+
+| Setting | In the form | Default | |
+| --- | --- | --- | --- |
+| `ruleAssistEnabled` | Use a small AI model for wordings the built-in reader can't handle | `false` | The opt-in. The two settings below are shown only while it is on |
+| `ollamaUrl` | Ollama server address | `http://localhost:11434` | The Ollama server; blank is `http://localhost:11434`. A URL that is not http or https, has no scheme (`gpu.local:11434`), or carries a user name, password, query or fragment is refused: no model is asked, the compile answer says why, and so does the plugin status at start |
+| `ruleAssistModel` | Model | `qwen3:0.6b` once the switch is on | A small Ollama model such as `qwen3:0.6b` or `gemma3:1b`. It picks from a short list of real paths, its answer held to a fixed format, and every result is read back for the operator to confirm. It is unloaded two minutes after use, so it does not hold GPU memory |
+
+The help is on only when `ruleAssistEnabled` is `true` and `ruleAssistModel`
+names a model; switched off, the address and model stay stored but are not
+used. Options from before the switch have no `ruleAssistEnabled`: for them a
+non-empty `ruleAssistModel` is on, as it always was.
+
+### Replay from history – optional (`replay`)
+
+| Setting | In the form | Default | |
+| --- | --- | --- | --- |
+| `historyServerUrl` | History server address | empty | Where the replay reads the History API; empty is this server, on localhost. Set it for history served by another Signal K instance (with its own `historyApiKey`). With TLS on, leave it blank and see [Servers with TLS](#servers-with-tls) |
+| `historyApiKey` | History API key | empty | Bearer token for a history server that is not this Signal K server: another host, or another service on this machine at a different port. The operator's own session is forwarded only to this server (a loopback address on the port it listens on) - a cookie minted here is replayable against another Signal K instance - so anything else needs a credential issued for itself. Blank for this server's own history, or an unauthenticated one. Shown masked in the form |
+| `historyProvider` | History provider | empty | A specific history provider plugin, for example `signalk-parquet`; empty is the server default |
+| `historyTimeoutMs` | Wait per request (ms) | `30000` | How long each History API request of a replay (the path listing and each values read) may take. A value under 30000, 0 included, is taken as 30000: a replay always waits at least 30 s per request, and never without a limit |
+
+### Advanced (`advanced`)
+
+| Setting | In the form | Default | |
+| --- | --- | --- | --- |
+| `watchMaxPaths` | Most paths to watch | `1500` | Most paths watched (10–10000), a bound on memory and CPU. Paths beyond it are counted in the panel but not watched |
+
+### Not in the form
+
 | Setting | Default | |
 | --- | --- | --- |
-| `watchEnabled` | `false` | Turn the watch on |
-| `watchSensitivity` | `normal` | `low`, `normal` or `high` (see the table under [Checks](#checks)) |
-| `watchLearningMinutes` | `30` | Minimum observation before a new path can raise anything (1–1440) |
-| `watchNotifications` | `true` | Publish findings as Signal K notifications |
-| `watchSound` | `false` | Add `sound` to the method of alert-level findings |
-| `watchDefaultExclusions` | `true` | Skip the paths listed under [Skipped by default](#skipped-by-default) |
-| `watchExcludePaths` | `[]` | More paths or patterns to skip |
-| `watchCounterPaths` | `[]` | Paths that only count up, under names the watch does not recognise (a plugin's own pulse or energy counter); they are not judged as levels or stuck sensors. A pattern covers the paths beneath it but not the measurements among them; list a path exactly to override that |
-| `watchMaxPaths` | `1500` | Most paths watched (10–10000) |
-| `ollamaUrl` | `http://localhost:11434` | Ollama server for reading rules the parser cannot. A URL that is not http or https, has no scheme (`gpu.local:11434`), or carries a user name, password, query or fragment is refused: no model is asked, and the compile answer says why |
-| `ruleAssistModel` | empty | A small Ollama model for that, for example `qwen3:0.6b`; empty is the parser only |
-| `historyServerUrl` | empty | Where the replay reads the History API; empty is this server |
-| `historyApiKey` | empty | Bearer token for a history server that is not this one |
-| `historyProvider` | empty | A specific history provider plugin, for example `signalk-parquet` |
-| `historyTimeoutMs` | `30000` | How long each History API request of a replay (the path listing and each values read) may take. A value under 30000, 0 included, is taken as 30000 |
-| `watchRules` | `[]` | Written by the panel; not in the settings form |
+| `watchRules` | `[]` | Written by the panel, at the top level of the options |
 
 ## Replay and the History API
 

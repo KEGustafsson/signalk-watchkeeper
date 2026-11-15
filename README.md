@@ -56,7 +56,8 @@ npm install signalk-watchkeeper
 ```
 
 Restart the server, open **Server → Plugin Config → Watchkeeper**, enable it
-and turn on **Watch all Signal K paths**. The panel is under **Webapps →
+and switch on **Turn on Watchkeeper**. That is the only setting you need:
+everything else has working defaults. The panel is under **Webapps →
 Signal K Watchkeeper**.
 
 Replay needs a History API provider plugin, such as signalk-to-influxdb2 or
@@ -64,23 +65,37 @@ signalk-parquet.
 
 ## Settings
 
+The settings form starts with one switch, **Turn on Watchkeeper**, and groups
+the rest into sections. In the plugin's options a setting is stored in its
+section, for example `watching.watchSensitivity` (the keys are shown in
+parentheses below). Settings saved by an earlier version are moved into the
+sections on the first start, and shown in the form from the start even while
+the plugin is off. The AI help is used only when its switch is on
+and a model is named.
+
 | Setting | Default | |
 | --- | --- | --- |
-| Watch all Signal K paths (`watchEnabled`) | off | Turn the watch on |
-| Watch sensitivity (`watchSensitivity`) | normal | `low`, `normal` or `high` |
+| **Turn on Watchkeeper** (`watchEnabled`) | off | Start learning and watching |
+| ***Alerts*** (`alerts`) | | |
+| Send alerts as Signal K notifications (`watchNotifications`) | on | Under `notifications.watchkeeper.*`, at warn or alert, never alarm or emergency |
+| Sound on serious alerts (`watchSound`) | off | Adds `sound` to alert-level notifications; warnings stay visual |
+| ***What to watch*** (`watching`) | | |
+| Sensitivity (`watchSensitivity`) | Normal | Calm – fewer alerts (`low`), Normal (`normal`), Sharp – more alerts (`high`) |
 | Learning period (`watchLearningMinutes`) | 30 | Minutes before a new path can raise anything |
-| Publish notifications (`watchNotifications`) | on | Under `notifications.watchkeeper.*` |
-| Sound on alerts (`watchSound`) | off | Adds `sound` to alert-level notifications |
-| Skip helm, wind and seabed paths (`watchDefaultExclusions`) | on | Heading, wind, depth and similar change quickly by nature |
+| Skip readings that move with the helm, wind and seabed (`watchDefaultExclusions`) | on | Heading, wind, depth and similar change quickly by nature |
 | Also skip these paths (`watchExcludePaths`) | none | Paths or patterns |
 | Counters under other names (`watchCounterPaths`) | none | Paths that only count up |
-| Most paths to watch (`watchMaxPaths`) | 1500 | A bound on memory and CPU |
-| Ollama server for reading rules (`ollamaUrl`) | `http://localhost:11434` | |
-| Model for reading rules (`ruleAssistModel`) | empty | A small model such as `qwen3:0.6b`; empty is the parser only |
-| Signal K server URL for replay (`historyServerUrl`) | empty | Empty is this server |
+| ***Rules in your own words – optional AI help*** (`ruleAssist`) | | |
+| Use a small AI model for wordings the built-in reader can't handle (`ruleAssistEnabled`) | off | Rules work without it; needs [Ollama](https://ollama.com), installed separately |
+| Ollama server address (`ollamaUrl`) | `http://localhost:11434` | Shown once the switch is on |
+| Model (`ruleAssistModel`) | `qwen3:0.6b` | Shown once the switch is on; unloaded two minutes after use |
+| ***Replay from history – optional*** (`replay`) | | |
+| History server address (`historyServerUrl`) | empty | Empty is this server |
 | History API key (`historyApiKey`) | empty | For a history server that is not this one |
 | History provider (`historyProvider`) | empty | A specific provider plugin |
-| History request timeout (`historyTimeoutMs`) | 30000 | Per replay request, at least 30 s |
+| Wait per request, ms (`historyTimeoutMs`) | 30000 | Per replay request, at least 30 s |
+| ***Advanced*** (`advanced`) | | |
+| Most paths to watch (`watchMaxPaths`) | 1500 | A bound on memory and CPU |
 
 The History API settings can also come from the environment:
 `SIGNALK_WATCHKEEPER_HISTORY_URL` and `SIGNALK_WATCHKEEPER_HISTORY_API_KEY`

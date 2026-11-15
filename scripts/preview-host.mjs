@@ -175,7 +175,8 @@ async function main() {
     shim.subscriptionmanager = { subscribe() {} };
   }
   const plugin = createPlugin(shim, demo ? { now: demo.now } : {});
-  plugin.start({ watchEnabled: true, ...(demo ? { watchLearningMinutes: 20 } : {}) });
+  // Options as the admin page stores them: the switch, then a section.
+  plugin.start({ watchEnabled: true, ...(demo ? { watching: { watchLearningMinutes: 20 } } : {}) });
   if (demo) {
     demo.run();
   }
