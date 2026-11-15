@@ -96,9 +96,12 @@ export default function WatchPanel(props: WatchPanelProps) {
   // Bumped on every refused copy, so the box is built again and its new text
   // is selected, even when the text is the same.
   const [manualCopyKey, setManualCopyKey] = React.useState<number>(0);
-  const [copiedTimer] = React.useState<{ current: ReturnType<typeof setTimeout> | undefined; alive: boolean }>({
+  // `latest` numbers each copy, so an older copy that settles late cannot
+  // undo a newer one.
+  const [copiedTimer] = React.useState<{ current: ReturnType<typeof setTimeout> | undefined; alive: boolean; latest: number }>({
     current: undefined,
-    alive: true
+    alive: true,
+    latest: 0
   });
   React.useEffect(() => {
     copiedTimer.alive = true;
@@ -113,8 +116,10 @@ export default function WatchPanel(props: WatchPanelProps) {
     setNotice((current) => (current === COPY_REFUSED ? null : current));
   }, []);
   const copyFor = React.useCallback((key: string, text: string) => {
+    copiedTimer.latest += 1;
+    const turn = copiedTimer.latest;
     void copyText(text).then((outcome) => {
-      if (!copiedTimer.alive) return;
+      if (!copiedTimer.alive || turn !== copiedTimer.latest) return;
       if (outcome === 'refused') {
         setCopied(null);
         setManualCopy(text);
@@ -708,7 +713,11 @@ export default function WatchPanel(props: WatchPanelProps) {
                 value={manualCopy}
                 rows={Math.min(12, manualCopy.split('\n').length + 1)}
                 style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'ui-monospace, monospace', fontSize: '0.85rem' }}
-                onFocus={(event: { currentTarget: HTMLTextAreaElement }) => event.currentTarget.select()}
+                onFocus={(event: { currentTarget: HTMLTextAreaElement }) => {
+                  // iOS selects nothing on select() alone.
+                  event.currentTarget.select();
+                  event.currentTarget.setSelectionRange(0, event.currentTarget.value.length);
+                }}
               />
               <button type="button" style={buttonStyle} onClick={closeManualCopy}>
                 Done

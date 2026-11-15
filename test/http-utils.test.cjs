@@ -128,20 +128,41 @@ describe('describeFetchFailure', () => {
   const { describeFetchFailure } = require('../lib/http-utils.cjs');
   const failed = (message, cause) => Object.assign(new Error(message), cause ? { cause } : {});
 
-  it('drops a raw password that has a slash, ?, #, a space or no scheme', () => {
+  it('drops the user-info of a URL, an @ in the password included', () => {
     for (const quoted of [
-      'http://admin:pa/ss@boat.example:3000',
-      'http://admin:pa#ss@boat.example',
-      'http://admin:pa?ss@boat.example',
-      'http://user:sec retpw@boat.example',
+      'http://admin:secret@boat.example:3000',
+      'http://admin:p@ssecret@boat.example:3000',
+      'http://admin:p%40s%2Fsecret@boat.example',
+      'http://me%40x.com:secret@boat.example',
       '//u:secretpw@boat.example',
-      'http://admin:p@s/secret@boat.example:3000',
-      'http://admin:se cr@t/pw@boat.example'
+      'HTTPS://admin:secret@boat.example',
+      'http://admin@boat.example'
     ]) {
       const { message } = describeFetchFailure(failed(`could not reach ${quoted}/api`));
-      assert.doesNotMatch(message, /secret|pa\/ss|pa#ss|pa\?ss|retpw|admin|sec /, `${quoted} -> ${message}`);
-      assert.match(message, /boat\.example/);
+      assert.doesNotMatch(message, /secret|admin|me%40/, `${quoted} -> ${message}`);
+      assert.match(message, /\/\/boat\.example(:3000)?\/api/, `${quoted} -> ${message}`);
     }
+  });
+
+  it('keeps the host that failed, and an @ that is not user-info', () => {
+    for (const [text, kept] of [
+      ['http://u:pw@one.example/x then user b@two.example', 'http://one.example/x then user b@two.example'],
+      ['http://admin:pw@boat.example/plugins/@signalk/x', 'http://boat.example/plugins/@signalk/x'],
+      ['GET http://boat.local:3000, then mail ops@boat.example', 'GET http://boat.local:3000, then mail ops@boat.example'],
+      ['reach http://[::1]:3000/signalk/v2/api/history/values; skipper@boat.example', 'reach http://[::1]:3000/signalk/v2/api/history/values; skipper@boat.example'],
+      ['http://[::1]:3000/x?paths=a@b', 'http://[::1]:3000/x?paths=a@b'],
+      ['http://boat.example:3000/x?email=a@b.c', 'http://boat.example:3000/x?email=a@b.c']
+    ]) {
+      assert.equal(describeFetchFailure(failed(text)).message, text === kept ? text : kept, text);
+    }
+  });
+
+  it('redacts in linear time, however long the text', () => {
+    const started = Date.now();
+    for (const text of ['a.'.repeat(50000), `${'a-'.repeat(50000)}:`, `${'a1+.-'.repeat(20000)}//a:b`, `//${'@'.repeat(100000)}x`]) {
+      describeFetchFailure(failed(text));
+    }
+    assert.ok(Date.now() - started < 500, `took ${Date.now() - started} ms`);
   });
 
   it('redacts each of two quoted URLs on its own', () => {

@@ -63,7 +63,8 @@ function copyWithTextarea(text: string, doc: DocumentLike | null | undefined): b
   doc.body.appendChild(area);
   try {
     area.select();
-    if (typeof area.setSelectionRange === 'function') area.setSelectionRange(0, text.length);
+    // The textarea's own length: a \r\n in the text is \n in its value.
+    if (typeof area.setSelectionRange === 'function') area.setSelectionRange(0, area.value.length);
     return doc.execCommand('copy') === true;
   } catch {
     return false;
