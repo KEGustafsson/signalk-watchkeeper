@@ -177,7 +177,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
       historyTimeoutMs: {
         type: 'integer',
         title: 'History request timeout (ms)',
-        description: 'How long one History API request of a replay may take. A replay waits at least 30 s per request whatever this says.',
+        description:
+          'How long each History API request of a replay (the path listing and each values read) may take. ' +
+          'A value under 30000, including 0, is taken as 30000: a replay always waits at least 30 s per request, and never without a limit.',
         default: DEFAULT_HISTORY_TIMEOUT_MS,
         minimum: 0,
         maximum: 120000
@@ -280,8 +282,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
 
   // Every write to the stored options goes through this one queue. Each
   // handler used to copy pluginOptions, await the save, then assign its copy
-  // back - so two overlapping saves (two watch rules, say) both started from the same options and the later one silently undid the
-  // earlier, while both reported success.
+  // back - so two overlapping saves (two watch rules, say) both started from
+  // the same options and the later one silently undid the earlier, while both
+  // reported success.
   let optionsWriteQueue = Promise.resolve();
 
   /**

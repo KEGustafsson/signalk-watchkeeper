@@ -52,9 +52,22 @@ the move is listed under **Changed**.
   `ollamaUrl` and `ruleAssistModel` (blank is the parser only). The model is
   let go two minutes after use. `watchRuleAssist` and `watchHelperModel` are
   gone.
-- "Ask AI about this" and the other hand-offs to a model are now **Copy as
-  text**, which copies the incident, the "most unusual" list or the report as
-  plain text.
+- "Ask AI about this" and the other hand-offs to a model are now copy
+  buttons: **Copy as text** on an incident and on the "most unusual" list,
+  and **Copy for the log** on the report. They copy plain text, also over
+  plain HTTP (where browsers offer no clipboard API), and show the text to
+  copy by hand when the browser allows neither way.
+- A rule-reading `ollamaUrl` that is not an http or https URL, has no scheme,
+  or carries a user name, password, query or fragment is refused, and the
+  compile answer says why; it is no longer quietly replaced by
+  `http://localhost:11434`. A model that cannot be reached is named with its
+  cause (`fetch failed: ECONNREFUSED`), without credentials the error quoted.
+- Every History API request of a replay, the path listing included, waits
+  `historyTimeoutMs` but at least 30 s; a setting of 0 no longer lets a
+  listing that never answers keep the replay busy for good.
+- Node.js 22 or later is required (`engines`), the versions CI tests; Node 20
+  reached its end of life in April 2026.
+- The plugin has its own icon, a lighthouse.
 - The History API client keeps only what replay needs, with its own settings
   (`historyServerUrl`, `historyApiKey`, `historyProvider`,
   `historyTimeoutMs`) and environment variables

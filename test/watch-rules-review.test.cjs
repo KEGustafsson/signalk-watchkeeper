@@ -167,7 +167,7 @@ describe('CodeRabbit full review: rule parser', () => {
 
 describe('CodeRabbit full review: rule assist', () => {
   const candidates = VESSEL.slice(0, 4);
-  const options = { baseUrl: 'http://ollama:11434', model: 'm', backend: 'ollama' };
+  const options = { baseUrl: 'http://ollama:11434', model: 'm' };
   const answer = (content) => async () => new Response(JSON.stringify({ message: { content } }), { status: 200 });
 
   it('does not wait for ever on an error reply whose body stalls (4575943951)', async () => {
@@ -312,7 +312,7 @@ describe('review of c5649a1: phrasings the leftover check refused', () => {
   });
 
   it('keeps the error detail of a response that offers only text()', async () => {
-    const options = { baseUrl: 'http://ollama:11434', model: 'm', backend: 'ollama' };
+    const options = { baseUrl: 'http://ollama:11434', model: 'm' };
     const fetchImpl = async () => ({ ok: false, status: 500, statusText: 'Internal Server Error', headers: new Map(), body: null, text: async () => 'model not loaded' });
     const result = await assistRule('x', VESSEL.slice(0, 4), options, { fetchImpl, errorBodyTimeoutMs: 50 });
     assert.equal(result.ok, false);
@@ -432,7 +432,7 @@ describe('review of 0934d63..7ecbc1a: the qualifier, apostrophes and quotes', ()
   });
 
   it('keeps the HTTP status when text() throws at once', async () => {
-    const options = { baseUrl: 'http://ollama:11434', model: 'm', backend: 'ollama' };
+    const options = { baseUrl: 'http://ollama:11434', model: 'm' };
     const fetchImpl = async () => ({
       ok: false,
       status: 503,

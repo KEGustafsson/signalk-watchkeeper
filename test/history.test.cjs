@@ -773,3 +773,85 @@ describe('reading a History API response', () => {
     assert.match(history.message, /could not be read \(the response is larger than 16 MB\)/);
   });
 });
+
+describe('a server URL that must not be called or quoted', () => {
+  const app = { config: { settings: {} } };
+  const SECRETS = /hunter2|p@ss|pa\/ss|retpw|admin/;
+
+  it('never calls, or repeats, a server URL with credentials in it', async () => {
+    for (const url of [
+      'http://admin:hunter2@boat.example:3000',
+      'http://admin:p@ss@boat.example:3000',
+      'http://admin:pa/ss@boat.example:3000',
+      'http://user:sec retpw@boat.example:3000',
+      'http:admin:hunter2@boat.example'
+    ]) {
+      const listing = await listHistoryPaths(app, historyConfig({ historyServerUrl: url }), {
+        fetchImpl: () => assert.fail('no request expected')
+      });
+      assert.doesNotMatch(listing.message, SECRETS, url);
+      assert.match(resolveHistoryBaseUrl(app, historyConfig({ historyServerUrl: url })), /^not called: the configured Signal K server URL /, url);
+    }
+  });
+
+  it('never calls one in a replay either', async () => {
+    const { createWatchService } = require('../lib/watch-service.cjs');
+    const host = { selfId: 'vessels.self', config: { settings: {} }, setPluginStatus() {}, handleMessage() {}, getSelfPath() {} };
+    const service = createWatchService(host, {
+      now: () => Date.parse('2026-06-02T08:00:00Z'),
+      fetchImpl: () => assert.fail('no request expected')
+    });
+    service.start({ watchEnabled: true });
+    try {
+      const result = await service.replay({ duration: 'PT1H' }, { historyServerUrl: 'http://admin:hunter2@boat.example:3000' });
+      assert.equal(result.ok, false);
+      assert.doesNotMatch(JSON.stringify(result), SECRETS);
+    } finally {
+      service.stop();
+    }
+  });
+
+  it('refuses a URL ending in an empty query or fragment, and reads a blank setting as blank', async () => {
+    for (const url of ['http://boat.local:3000?', 'http://boat.local:3000/#']) {
+      assert.match(resolveHistoryBaseUrl(app, historyConfig({ historyServerUrl: url })), /has a query or a fragment/, url);
+      const listing = await listHistoryPaths(app, historyConfig({ historyServerUrl: url }), {
+        fetchImpl: () => assert.fail('no request expected')
+      });
+      assert.match(listing.message, /has a query or a fragment/, url);
+    }
+    const spaces = normalizeHistoryConfig({ historyServerUrl: '   ' }, { SIGNALK_WATCHKEEPER_HISTORY_URL: 'ftp://x' });
+    assert.match(resolveHistoryBaseUrl(app, spaces), /SIGNALK_WATCHKEEPER_HISTORY_URL is not an http or https URL/);
+  });
+
+  it('words fetch\'s parse failure without a dangling word', async () => {
+    const listing = await listHistoryPaths(app, historyConfig({ historyServerUrl: 'http://boat.example:3000' }), {
+      fetchImpl: async () => {
+        const error = new TypeError('Failed to parse URL from http://admin:pa/ss@boat.example/x');
+        error.cause = { code: 'ERR_INVALID_URL' };
+        throw error;
+      }
+    });
+    assert.doesNotMatch(listing.message, /from:|admin|pa\/ss/);
+    assert.match(listing.message, /Failed to parse URL: ERR_INVALID_URL/);
+  });
+
+  it('keeps only the reason from fetch\'s own refusal of a URL', async () => {
+    const listing = await listHistoryPaths(app, historyConfig({ historyServerUrl: 'http://boat.example:3000' }), {
+      fetchImpl: async () => {
+        throw new TypeError('Request cannot be constructed from a URL that includes credentials: http://user:sec retpw@boat.example/x');
+      }
+    });
+    assert.doesNotMatch(listing.message, /retpw|user:/);
+    assert.match(listing.message, /Request cannot be constructed from a URL that includes credentials/);
+  });
+
+  it('does not repeat credentials that reach a fetch error some other way', async () => {
+    const listing = await listHistoryPaths(app, historyConfig({ historyServerUrl: 'http://boat.example:3000' }), {
+      fetchImpl: async () => {
+        throw new TypeError('Request failed for http://admin:p@ss@boat.example:3000/x?email=a@b.c');
+      }
+    });
+    assert.doesNotMatch(listing.message, /admin|p@ss|ss@/);
+    assert.match(listing.message, /http:\/\/boat\.example:3000\/x\?email=a@b\.c/, 'text after the host is left alone');
+  });
+});

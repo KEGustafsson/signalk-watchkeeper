@@ -1,6 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72" role="img" aria-label="AI Bridge icon">
-  <rect width="72" height="72" rx="12" fill="#0b3d91"/>
-  <circle cx="36" cy="24" r="8" fill="#7dd3fc"/>
-  <rect x="20" y="38" width="32" height="16" rx="6" fill="#bae6fd"/>
-  <path d="M18 56h36" stroke="#e0f2fe" stroke-width="4" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72" role="img" aria-label="Watchkeeper icon">
+  <rect width="72" height="72" rx="12" fill="#0f2a3d"/>
+  <path d="M36 12 46 56H26Z" fill="#e2e8f0"/>
+  <path d="M29.6 40h12.8l1.4 6H28.2Z" fill="#b91c1c"/>
+  <rect x="31" y="14" width="10" height="7" rx="1.5" fill="#fbbf24"/>
+  <path d="M41 17.5 60 11v13ZM31 17.5 12 11v13Z" fill="#fde68a" opacity="0.55"/>
+  <path d="M10 60h52" stroke="#38bdf8" stroke-width="4" stroke-linecap="round"/>
 </svg>

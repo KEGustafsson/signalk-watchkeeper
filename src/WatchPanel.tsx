@@ -11,6 +11,7 @@ import {
   sparklinePoints,
   storedRule
 } from './watchText.js';
+import { COPIED_MS, copyText } from './clipboard.js';
 import type { WatchIncident, WatchInventory, WatchReplayResult, WatchReport, WatchRuleCompileResult, WatchStatus, WatchUnusualRow } from './watchText.js';
 
 interface WatchPanelProps {
@@ -19,18 +20,7 @@ interface WatchPanelProps {
   readonly endpoint: (route: string) => string;
 }
 
-const COPY_REFUSED = 'This browser did not allow copying to the clipboard.';
-
-/** Put text on the clipboard; false where the browser does not allow it. */
-async function copyText(text: string): Promise<boolean> {
-  try {
-    if (typeof navigator === 'undefined' || !navigator.clipboard) return false;
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
+const COPY_REFUSED = 'This browser did not allow copying, so the text is shown below: select it and copy it by hand.';
 
 // The status route reads in-memory state only - no backend, no provider - so
 // polling it is cheap.
@@ -98,8 +88,27 @@ export default function WatchPanel(props: WatchPanelProps) {
   const [compileGeneration] = React.useState<{ current: number }>({ current: 0 });
   const [compiled, setCompiled] = React.useState<WatchRuleCompileResult | 'working' | null>(null);
   const [unusual, setUnusual] = React.useState<readonly WatchUnusualRow[] | 'loading' | { error: string } | null>(null);
-  // What was last copied: 'report', 'unusual' or an incident id.
+  // What was last copied: 'report', 'unusual' or an incident id. It reads
+  // "Copied" for a moment, then as a button again.
   const [copied, setCopied] = React.useState<string | null>(null);
+  // Text the browser would not copy by either means, shown for copying by hand.
+  const [manualCopy, setManualCopy] = React.useState<string | null>(null);
+  const [copiedTimer] = React.useState<{ current: ReturnType<typeof setTimeout> | undefined }>({ current: undefined });
+  React.useEffect(() => () => clearTimeout(copiedTimer.current), [copiedTimer]);
+  const copyFor = React.useCallback((key: string, text: string) => {
+    void copyText(text).then((outcome) => {
+      if (outcome === 'refused') {
+        setCopied(null);
+        setManualCopy(text);
+        setNotice(COPY_REFUSED);
+        return;
+      }
+      setManualCopy(null);
+      setCopied(key);
+      clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied((current) => (current === key ? null : current)), COPIED_MS);
+    });
+  }, [copiedTimer]);
 
   const fetchImpl = props.fetchImpl ?? globalThis.fetch;
   const statusUrl = props.endpoint('/watch/status');
@@ -448,7 +457,7 @@ export default function WatchPanel(props: WatchPanelProps) {
               type="button"
               style={buttonStyle}
               title="Copies this incident as plain text, for the log or a message."
-              onClick={() => void copyText(incidentText(incident)).then((ok) => (ok ? setCopied(incident.id) : setNotice(COPY_REFUSED)))}
+              onClick={() => copyFor(incident.id, incidentText(incident))}
             >
               {copied === incident.id ? 'Copied' : 'Copy as text'}
             </button>
@@ -669,6 +678,22 @@ export default function WatchPanel(props: WatchPanelProps) {
             </button>
           </div>
           {notice ? <p style={{ margin: '0.4rem 0 0 0', color: '#475569' }}>{notice}</p> : null}
+          {manualCopy !== null ? (
+            <div style={{ marginTop: '0.4rem' }}>
+              <textarea
+                readOnly
+                autoFocus
+                aria-label="Text to copy"
+                value={manualCopy}
+                rows={Math.min(12, manualCopy.split('\n').length + 1)}
+                style={{ width: '100%', boxSizing: 'border-box', fontFamily: 'ui-monospace, monospace', fontSize: '0.85rem' }}
+                onFocus={(event: { currentTarget: HTMLTextAreaElement }) => event.currentTarget.select()}
+              />
+              <button type="button" style={buttonStyle} onClick={() => setManualCopy(null)}>
+                Done
+              </button>
+            </div>
+          ) : null}
 
           {report === 'loading' ? <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>Writing the report…</p> : null}
           {report && report !== 'loading' && 'error' in report ? (
@@ -685,7 +710,7 @@ export default function WatchPanel(props: WatchPanelProps) {
               <button
                 type="button"
                 style={{ ...buttonStyle, marginTop: '0.4rem' }}
-                onClick={() => void copyText(reportText(report)).then((ok) => (ok ? setCopied('report') : setNotice(COPY_REFUSED)))}
+                onClick={() => copyFor('report', reportText(report))}
               >
                 {copied === 'report' ? 'Copied' : 'Copy for the log'}
               </button>
@@ -716,7 +741,7 @@ export default function WatchPanel(props: WatchPanelProps) {
                   <button
                     type="button"
                     style={{ ...buttonStyle, marginTop: '0.4rem' }}
-                    onClick={() => void copyText(unusualText(unusual)).then((ok) => (ok ? setCopied('unusual') : setNotice(COPY_REFUSED)))}
+                    onClick={() => copyFor('unusual', unusualText(unusual))}
                   >
                     {copied === 'unusual' ? 'Copied' : 'Copy as text'}
                   </button>

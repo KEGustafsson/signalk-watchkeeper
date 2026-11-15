@@ -78,7 +78,13 @@ signalk-parquet.
 | Signal K server URL for replay (`historyServerUrl`) | empty | Empty is this server |
 | History API key (`historyApiKey`) | empty | For a history server that is not this one |
 | History provider (`historyProvider`) | empty | A specific provider plugin |
-| History request timeout (`historyTimeoutMs`) | 30000 | Per replay request |
+| History request timeout (`historyTimeoutMs`) | 30000 | Per replay request, at least 30 s |
+
+The History API settings can also come from the environment, for when they are
+blank: `SIGNALK_WATCHKEEPER_HISTORY_URL`, `SIGNALK_WATCHKEEPER_HISTORY_API_KEY`
+and `SIGNALK_WATCHKEEPER_HISTORY_TIMEOUT_MS`. Which server is sent your session,
+and how to make Signal K's own TLS certificate verify, are in
+[Replay and the History API](docs/watchkeeper.md#replay-and-the-history-api).
 
 Watch rules are stored with the plugin's settings, written by the panel.
 

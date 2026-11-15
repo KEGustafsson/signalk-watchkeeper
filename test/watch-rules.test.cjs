@@ -156,7 +156,7 @@ describe('rule assist (model fallback)', () => {
     const result = await assistRule(
       'engine running hot, over ninety, at cruising revs',
       candidates,
-      { baseUrl: 'http://ollama:11434', model: 'qwen3:0.6b', keepAlive: '2m', backend: 'ollama' },
+      { baseUrl: 'http://ollama:11434', model: 'qwen3:0.6b', keepAlive: '2m' },
       { fetchImpl }
     );
     assert.equal(sent.url, 'http://ollama:11434/api/chat');
@@ -171,10 +171,9 @@ describe('rule assist (model fallback)', () => {
 
   it('reports a model that found nothing, or answered badly, without throwing', async () => {
     const answer = (content) => async () => new Response(JSON.stringify({ message: { content } }), { status: 200 });
-    const options = { baseUrl: 'http://ollama:11434', model: 'm', backend: 'ollama' };
+    const options = { baseUrl: 'http://ollama:11434', model: 'm' };
     assert.match((await assistRule('x', candidates, options, { fetchImpl: answer('{"path":""}') })).message, /no path/);
     assert.match((await assistRule('x', candidates, options, { fetchImpl: answer('sure!') })).message, /did not answer with a rule/);
-    assert.match((await assistRule('x', candidates, { ...options, backend: 'tensorrt-llm' }, {})).message, /needs the Ollama backend/);
   });
 });
 

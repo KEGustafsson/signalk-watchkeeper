@@ -28,6 +28,7 @@ rule format, the HTTP API, and how to tune it. For a short introduction see the
 - [Where the language model is and is not used](#where-the-language-model-is-and-is-not-used)
 - [HTTP API](#http-api)
 - [Settings](#settings)
+- [Replay and the History API](#replay-and-the-history-api)
 - [Persistence](#persistence)
 - [Tuning](#tuning)
 - [Performance](#performance)
@@ -686,13 +687,126 @@ never sees.
 | `watchExcludePaths` | `[]` | More paths or patterns to skip |
 | `watchCounterPaths` | `[]` | Paths that only count up, under names the watch does not recognise (a plugin's own pulse or energy counter); they are not judged as levels or stuck sensors. A pattern covers the paths beneath it but not the measurements among them; list a path exactly to override that |
 | `watchMaxPaths` | `1500` | Most paths watched (10–10000) |
-| `ollamaUrl` | `http://localhost:11434` | Ollama server for reading rules the parser cannot |
+| `ollamaUrl` | `http://localhost:11434` | Ollama server for reading rules the parser cannot. A URL that is not http or https, has no scheme (`gpu.local:11434`), or carries a user name, password, query or fragment is refused: no model is asked, and the compile answer says why |
 | `ruleAssistModel` | empty | A small Ollama model for that, for example `qwen3:0.6b`; empty is the parser only |
 | `historyServerUrl` | empty | Where the replay reads the History API; empty is this server |
 | `historyApiKey` | empty | Bearer token for a history server that is not this one |
 | `historyProvider` | empty | A specific history provider plugin, for example `signalk-parquet` |
-| `historyTimeoutMs` | `30000` | Per request of a replay; at least 30 s is allowed whatever this says |
+| `historyTimeoutMs` | `30000` | How long each History API request of a replay (the path listing and each values read) may take. A value under 30000, 0 included, is taken as 30000 |
 | `watchRules` | `[]` | Written by the panel; not in the settings form |
+
+## Replay and the History API
+
+**Replay last 24 h** reads the Signal K History API: first the list of
+recorded paths, then their values in requests of up to 10 paths. It needs a
+history provider plugin (signalk-to-influxdb2, signalk-parquet, ...) recording
+on this server or another one.
+
+Three environment variables stand in for the settings when those are blank:
+
+| Variable | Stands in for |
+| --- | --- |
+| `SIGNALK_WATCHKEEPER_HISTORY_URL` | `historyServerUrl` |
+| `SIGNALK_WATCHKEEPER_HISTORY_API_KEY` | `historyApiKey` |
+| `SIGNALK_WATCHKEEPER_HISTORY_TIMEOUT_MS` | `historyTimeoutMs` |
+
+### Which server gets your session
+
+The History API is behind the same authentication as the rest of the REST
+API, and a plugin has no session of its own. The operator who presses
+**Replay** does: their cookie or bearer token arrives on that request and is
+forwarded to the history reads, so a replay reads exactly the history that
+operator could read themselves.
+
+That holds only when the History API is this Signal K server. A cookie minted
+here is replayable against another Signal K instance, so the session is
+forwarded only to **this server**: a loopback address that reaches it, on the
+port it listens on. The port is worked out the way Signal K picks it (the
+listening socket itself is a server internal that plugins may not use):
+
+- the HTTP port is `PORT` if set, else `port` in its settings, else 3000;
+- with TLS on, the HTTPS port is `SSLPORT` if set, else `sslport`, else 3443.
+  A blank `historyServerUrl` calls that port; the HTTP port carries only its
+  redirect, and is neither called nor sent the session;
+- only the value Signal K uses counts: with `PORT` set, a different `port` in
+  the settings is not one of its ports, and the same for `SSLPORT`;
+- under systemd socket activation (`LISTEN_FDS` set), which
+  `signalk-server-setup` uses for every systemd install, systemd opens the
+  listening socket and Signal K listens on none of its configured ports. The
+  port is then the one Signal K advertises: `EXTERNALPORT`, which the setup
+  script writes as the socket's own port (3000, 80, 3443 or 443), and for a
+  hand-written unit without it, `proxy_port` or the configured port. The
+  default 3000 does not count on an install whose socket is 80.
+
+Outside socket activation, `EXTERNALPORT` and `proxy_port` are ports a reverse
+proxy publishes, not ones this server listens on, and never count. Under
+socket activation, a hand-written unit whose `EXTERNALPORT` names a reverse
+proxy (nginx on 80 in front of `ListenStream=3000`) has the session sent to
+that proxy, which hands it to this server. If something else answers on that
+port, set `historyServerUrl` to the socket's own port and give it a
+`historyApiKey` (a token issued by this server).
+
+When no port of this server is known (a configured or advertised port that is
+not a valid port), a blank `historyServerUrl` calls nothing rather than send
+the paths and window to whatever holds a guessed port, and the replay says
+why.
+
+Another host, or `localhost` at another port (any other service on this
+machine is on loopback too), is never sent the session. Give it a credential
+issued for itself in `historyApiKey`, or leave that blank if it needs none.
+When a key is configured and the server still answers 401 or 403, the replay
+shows the server's own reason and says the key was rejected.
+
+A `historyServerUrl` (or `SIGNALK_WATCHKEEPER_HISTORY_URL`) with a user name
+or password in it (`http://user:password@host`), one that is not a valid http
+or https URL, or one with a query or fragment (even an empty `?` or `#`,
+which the API path would be appended after) is never called. The replay says
+so without repeating the URL, so a password does not reach the panel; put a
+token in `historyApiKey` instead.
+
+On this server's port, `localhost`, `127.0.0.1` and `[::1]` all count. Signal
+K listens without naming a host, and Node then binds the dual-stack wildcard
+`::` (or `0.0.0.0` on a host without IPv6); a systemd `ListenStream=<port>`
+socket binds dual-stack too by default. While Signal K holds the port that
+way, no other process can hold `127.0.0.1` or `[::1]` on it. The exposure that
+remains is a listener on one address family only: a socket unit with
+`BindIPv6Only=ipv6-only`, or `net.ipv6.bindv6only=1` with the default
+`BindIPv6Only=`, or one bound to an IPv4 address. Another service could then
+take the other family's loopback on the same port. Avoid that combination, or
+set `historyServerUrl` to the loopback address Signal K holds.
+
+### Servers with TLS
+
+With TLS on, a blank `historyServerUrl` calls `https://localhost:<port>`. Node
+does not trust Signal K's generated certificate, so that call fails with
+`DEPTH_ZERO_SELF_SIGNED_CERT` until it is told to:
+
+- Signal K's generated certificate (`ssl-cert.pem` in its configuration
+  directory, normally `~/.signalk`) is issued to `localhost`, so starting
+  Signal K with `NODE_EXTRA_CA_CERTS` pointing at it makes
+  `https://localhost:<port>` verify. In a systemd install, add
+  `Environment=NODE_EXTRA_CA_CERTS=/home/<user>/.signalk/ssl-cert.pem` to the
+  service (`systemctl edit signalk`) and restart it. `https://127.0.0.1` still
+  fails (`ERR_TLS_CERT_ALTNAME_INVALID`): the certificate names only
+  `localhost`;
+- a certificate of your own: add its issuer to `NODE_EXTRA_CA_CERTS` the same
+  way, and call a name it is issued to. A name that is not a loopback address
+  is not this server as far as the session goes, so give it a
+  `historyApiKey`.
+
+A failed call names its cause (`fetch failed: ECONNREFUSED`, `fetch failed:
+DEPTH_ZERO_SELF_SIGNED_CERT`, ...), and a rejected certificate comes with this
+advice.
+
+### Response size and time
+
+A History API response is read at most 16 MB far (a declared larger
+`Content-Length` is refused without reading), and an error body at most 4 kB.
+The plugin runs in the Signal K server's own process, so a provider that
+ignores the requested resolution cannot exhaust its memory: the replay says the
+response was too large instead. Each request waits `historyTimeoutMs`, at
+least 30 s, so a provider that never answers ends the replay with a message
+rather than leave it running.
 
 ## Persistence
 

@@ -14,6 +14,8 @@
   "include": [
     "src/test-node-shims.d.ts",
     "src/watchText.ts",
-    "src/watchText.test.ts"
+    "src/watchText.test.ts",
+    "src/clipboard.ts",
+    "src/clipboard.test.ts"
   ]
 }

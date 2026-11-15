@@ -168,6 +168,38 @@ describe('watch service', () => {
     }
   });
 
+  it('gives up on a path listing that never answers, whatever historyTimeoutMs says, and can replay again', async () => {
+    for (const historyTimeoutMs of [0, 10]) {
+      const host = createHost();
+      let listings = 0;
+      // Never answers, until the request is aborted.
+      const fetchImpl = (url, init = {}) =>
+        new Promise((resolve, reject) => {
+          if (String(url).includes('/history/paths')) listings += 1;
+          if (init.signal) init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+        });
+      // A short floor keeps the test fast; the plugin's own is 30 s.
+      const service = createWatchService(host, { now: () => Date.parse('2026-06-02T08:00:00Z'), fetchImpl, replayTimeoutMs: 200 });
+      service.start({ watchEnabled: true });
+      try {
+        const started = Date.now();
+        const first = await Promise.race([
+          service.replay({ duration: 'PT1H' }, { historyTimeoutMs }),
+          new Promise((resolve) => setTimeout(() => resolve('hung'), 2000))
+        ]);
+        assert.notEqual(first, 'hung', `historyTimeoutMs ${historyTimeoutMs}: the listing has a limit`);
+        assert.equal(first.ok, false);
+        assert.ok(Date.now() - started >= 150, `historyTimeoutMs ${historyTimeoutMs}: the listing waits the floor, not less`);
+        // Not left busy: a second replay runs.
+        const second = await service.replay({ duration: 'PT1H' }, { historyTimeoutMs });
+        assert.equal(second.ok, false);
+        assert.equal(listings, 2);
+      } finally {
+        service.stop();
+      }
+    }
+  });
+
   it('replays recorded history through a fresh watch', async () => {
     const host = createHost();
     const end = Date.parse('2026-06-02T08:00:00Z');
