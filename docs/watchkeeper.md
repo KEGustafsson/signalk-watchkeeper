@@ -1145,6 +1145,10 @@ reported as dropouts or failovers. About 1.2 MB per 1,000 paths.
   value first seen then waits. Back on it, nothing on the way was news; not
   back by then, it is one change (and a new state, if the value is new). A
   restart during a detour keeps the value from before the first.
+- *Habits are not learned from restarts.* Nothing is added to a path's
+  habits during the start-up, and a departure that began then is the
+  restart's until it ends, however long it fades afterward. An episode in
+  progress at a restart within 30 minutes of the save carries on as one.
 - *"No value" keeps its start.* A sensor sending `null` when the plugin
   stopped is still said to have had no value since then; its dropout still
   counts from the restart.

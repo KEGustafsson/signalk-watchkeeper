@@ -637,6 +637,35 @@ describe('watch learning: a restart is not news', () => {
     assert.match(finding.message, /No reading for 3[67] min/);
   });
 
+  it('does not learn a link\'s reconnection at every restart as a habit of the link', () => {
+    const rand = noise(26);
+    const rtt = 'networking.edgeLink.boat.rtt';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[rtt, 0.05 + 0.002 * rand()]]);
+    for (let index = 0; index < 6; index += 1) {
+      ({ engine, t } = restart(engine, t));
+      const start = t;
+      t = run(engine, t, t + 2 * HOUR, 5 * SECOND, (now) => [[rtt, now - start < 75 * SECOND ? 0.4 : 0.05 + 0.002 * rand()]]);
+    }
+    const state = engine.exportState(t).paths.find((item) => item.path === rtt);
+    assert.equal(habits.usual(state, 'shift+', t), undefined, 'the restarts\' spikes are not the link\'s');
+    const start = t;
+    t = run(engine, t, t + 2 * MINUTE, SECOND, (now) => [[rtt, now - start < 90 * SECOND ? 0.4 : 0.05]]);
+    assert.ok(opened(engine, 'shift').some((entry) => entry.path === rtt), 'the same spike without a restart is still news');
+  });
+
+  it('keeps a departure that a short restart cut in two as one episode', () => {
+    const state = monitor.createPathState('networking.edgeLink.boat.jitter', T0);
+    habits.follow(state, 'shift+', 9, true, T0);
+    const saved = JSON.parse(JSON.stringify(monitor.exportPathState(state)));
+    const restored = monitor.importPathState(saved, T0 + MINUTE, { savedAt: T0 });
+    habits.follow(restored, 'shift+', 12, true, T0 + 2 * MINUTE);
+    habits.follow(restored, 'shift+', 0, false, T0 + 3 * MINUTE);
+    assert.deepEqual(restored.habits['shift+'].past, [[T0 + 3 * MINUTE, 12, 3 * MINUTE]]);
+    const late = monitor.importPathState(saved, T0 + 2 * HOUR, { savedAt: T0 });
+    assert.equal(late.habits && late.habits['shift+'] && late.habits['shift+'].open, undefined, 'after a long time down it is not known to be the same one');
+  });
+
   it('applies an operating state as it stands when start-up is over, not each value on the way', () => {
     let engine = newEngine();
     let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [['navigation.state', 'moored']]);

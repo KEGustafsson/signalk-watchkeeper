@@ -48,7 +48,9 @@ still reported.
   opens (your own watches excepted) until they are over. A state path's
   switches are not counted until it is back on its value from before the
   restart (15 minutes at most), as some plugins take minutes to settle; how
-  long a sensor has had no value is kept across a restart.
+  long a sensor has had no value is kept across a restart. Habits are not
+  learned from a restart's own departures (a link reconnecting), and an
+  episode a short restart cut in two stays one.
 - **A flapping operating state waits.** A gate that changed more than 4 times
   in the last hour is applied only once it has held one state for 10 minutes,
   so a charger hunting between modes does not keep the electrical paths
