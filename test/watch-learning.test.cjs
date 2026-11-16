@@ -208,13 +208,24 @@ describe('watch learning: how long a path holds one value', () => {
     assert.ok(detectors(engine).includes(`frozen:${path}`), detectors(engine).join(', '));
   });
 
-  it('starts the day of a hold record saved before records knew when they began', () => {
-    const saved = {
-      path: 'propulsion.raw_water.temperature',
-      kind: 'continuous',
-      runRecords: { '': { bins: new Array(22).fill(0), count: 40, at: T0 - HOUR } }
+  it('counts only watched time toward the day a long hold is judged against', () => {
+    const engine = newEngine();
+    const path = 'propulsion.raw_water.temperature';
+    let value = 281;
+    const step = (now) => {
+      if ((now - T0) % (7 * MINUTE) === 0) value = value === 281 ? 281.25 : 281;
+      return [[path, value]];
     };
-    assert.equal(monitor.importPathState(saved, T0).runRecords[''].since, T0);
+    // Five hours: enough runs to judge a short hold, not a day of them.
+    let t = run(engine, T0, T0 + 5 * HOUR, 10 * SECOND, step);
+    // Three days down, then fifty minutes on one reading: still an evening's
+    // watching, not a day's.
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    const later = t + 3 * 24 * HOUR;
+    const restarted = newEngine({}, later);
+    restarted.importState(saved, later);
+    t = run(restarted, later, later + 50 * MINUTE, 10 * SECOND, () => [[path, 281]]);
+    assert.deepEqual(opened(restarted, 'frozen'), []);
   });
 
   it('does not take a run that an outage interrupted for a value held', () => {
@@ -690,6 +701,24 @@ describe('watch learning: a restart is not news', () => {
     const start = t;
     t = run(engine, t, t + 2 * MINUTE, SECOND, (now) => [[rtt, now - start < 90 * SECOND ? 0.4 : 0.05]]);
     assert.ok(opened(engine, 'shift').some((entry) => entry.path === rtt), 'the same spike without a restart is still news');
+  });
+
+  it('carries a finding whose condition came back just before the deadline and needed its persistence after it', () => {
+    const rand = noise(56);
+    const path = 'electrical.batteries.house.voltage';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.9 + 0.02 * rand()]]);
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 11.9 + 0.02 * rand()]]);
+    const before = engine.status().activeFindings.find((item) => item.detector === 'shift');
+    ({ engine, t } = restart(engine, t));
+    const restartedAt = t;
+    // Normal until five seconds before the 20 minutes are up, then low again.
+    t = run(engine, t, restartedAt + 20 * MINUTE - 5 * SECOND, SECOND, () => [[path, 12.9 + 0.02 * rand()]]);
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 11.9 + 0.02 * rand()]]);
+    const after = engine.status().activeFindings.find((item) => item.detector === 'shift');
+    assert.ok(after);
+    assert.equal(after.openedAt, before.openedAt, 'the same finding');
+    assert.equal(engine.status().incidents.length, 1);
   });
 
   it('keeps a departure that a short restart cut in two as one episode', () => {
