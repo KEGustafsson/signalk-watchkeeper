@@ -50,7 +50,8 @@ still reported.
   restart (15 minutes at most), as some plugins take minutes to settle; how
   long a sensor has had no value is kept across a restart. Habits are not
   learned from a restart's own departures (a link reconnecting), and an
-  episode a short restart cut in two stays one.
+  episode a short restart cut in two stays one. A path that has not read
+  again since a restart is not a dropout for its first 15 minutes.
 - **A flapping operating state waits.** A gate that changed more than 4 times
   in the last hour is applied only once it has held one state for 10 minutes,
   so a charger hunting between modes does not keep the electrical paths

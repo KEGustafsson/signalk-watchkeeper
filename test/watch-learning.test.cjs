@@ -668,10 +668,11 @@ describe('watch learning: a restart is not news', () => {
     let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [[path, 3 + 0.05 * rand()]]);
     t = run(engine, t, t + 30 * MINUTE, 10 * SECOND, () => [[path, null]]);
     ({ engine, t } = restart(engine, t));
-    t = run(engine, t, t + 5 * MINUTE, 10 * SECOND, () => [[path, null]]);
+    // Reported once reacquiring after the restart is over (15 minutes).
+    t = run(engine, t, t + 16 * MINUTE, 10 * SECOND, () => [[path, null]]);
     const finding = engine.status().activeFindings.find((item) => item.detector === 'dropout');
     assert.ok(finding, detectors(engine).join(', '));
-    assert.match(finding.message, /No reading for 3[67] min/);
+    assert.match(finding.message, /No reading for 4[67] min/);
   });
 
   it('does not learn a link\'s reconnection at every restart as a habit of the link', () => {
@@ -759,6 +760,21 @@ describe('watch learning: review of the fourth commit', () => {
     t = run(engine, t, t + 5 * MINUTE, SECOND, () => [[path, 40 + rand()]]);
     const after = engine.exportState(t).paths.find((item) => item.path === path).habits['shift+'].open.peak;
     assert.ok(after > before, `${after} > ${before}`);
+  });
+
+  it('waits for a sensor a plugin takes minutes to hear again after a restart, and reports one that never comes back', () => {
+    const rand = noise(54);
+    const slow = 'environment.inside.bedroom.temperature';
+    const dead = 'environment.inside.cabin.temperature';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [[slow, 280 + 0.1 * rand()], [dead, 290 + 0.1 * rand()]]);
+    ({ engine, t } = restart(engine, t));
+    const start = t;
+    // The bedroom sensor sends no value for six minutes; the cabin's never reads again.
+    t = run(engine, t, t + 12 * MINUTE, 10 * SECOND, (now) => [[slow, now - start < 6 * MINUTE ? null : 280 + 0.1 * rand()]]);
+    assert.deepEqual(opened(engine, 'dropout'), [], 'nothing while they are reacquired');
+    t = run(engine, t, start + 16 * MINUTE, 10 * SECOND, () => [[slow, 280 + 0.1 * rand()]]);
+    assert.deepEqual(detectors(engine), [`dropout:${dead}`], 'the one that never came back is reported once reacquiring is over');
   });
 
   it('still reports a new state seen on a restart detour after another restart', () => {

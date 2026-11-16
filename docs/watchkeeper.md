@@ -1150,6 +1150,11 @@ reported as dropouts or failovers. About 1.2 MB per 1,000 paths.
   habits during the start-up, and a departure that began then is the
   restart's until it ends, however long it fades afterward. An episode in
   progress at a restart within 30 minutes of the save carries on as one.
+- *Paths are reacquired.* A path that has not read again since the
+  restart (a Bluetooth plugin may take minutes to hear its sensors again,
+  sending "no value" meanwhile) is not reported as a dropout until it has,
+  or for 15 minutes. So a feed that is dead when the server starts is
+  reported up to 15 minutes later than one that dies while running.
 - *"No value" keeps its start.* A sensor sending `null` when the plugin
   stopped is still said to have had no value since then; its dropout still
   counts from the restart.
