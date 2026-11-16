@@ -43,8 +43,9 @@ still reported.
   on as the same finding, in the same incident, if its condition is back
   within 10 minutes of a restart (and the save is under 30 minutes old). For
   the first 2 minutes after start, states that plugins announce again are not
-  counted as switching, a new state must still hold when they are over, and
-  an operating state is applied once, as it stands then.
+  counted as switching, a new state must still hold when they are over, an
+  operating state is applied once, as it stands then, and no new finding
+  opens (your own watches excepted) until they are over.
 - **A flapping operating state waits.** A gate that changed more than 4 times
   in the last hour is applied only once it has held one state for 10 minutes,
   so a charger hunting between modes does not keep the electrical paths

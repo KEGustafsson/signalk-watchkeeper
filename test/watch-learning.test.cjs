@@ -550,7 +550,7 @@ describe('watch learning: a restart is not news', () => {
     t = run(engine, t, t + MINUTE, SECOND, () => [[path, 11.9 + 0.02 * rand()]]);
     ({ engine, t } = restart(engine, t, 45 * MINUTE));
     assert.equal(engine.status().incidents[0].status, 'resolved', 'three quarters of an hour down: what was open then is closed');
-    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 11.9 + 0.02 * rand()]]);
+    t = run(engine, t, t + 3 * MINUTE, SECOND, () => [[path, 11.9 + 0.02 * rand()]]);
     assert.equal(engine.status().incidents.length, 2);
   });
 
@@ -577,6 +577,21 @@ describe('watch learning: a restart is not news', () => {
     assert.deepEqual(detectors(engine), [], 'nothing during start-up');
     t = run(engine, t, t + 3 * MINUTE, 10 * SECOND, () => [[camera, 'forward'], [link, 'up']]);
     assert.deepEqual(detectors(engine), [`newState:${camera}`], 'the camera that stayed is news; the link that passed through "connecting" is not');
+  });
+
+  it('does not report a link that reconnects after a restart, and still reports one that stays bad', () => {
+    const rand = noise(24);
+    const rtt = 'networking.edgeLink.boat.rtt';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[rtt, 0.05 + 0.002 * rand()]]);
+    ({ engine, t } = restart(engine, t));
+    const start = t;
+    // A minute of high round-trip time while the link comes back.
+    t = run(engine, t, t + 3 * MINUTE, SECOND, (now) => [[rtt, now - start < MINUTE ? 0.4 : 0.05 + 0.002 * rand()]]);
+    assert.deepEqual(opened(engine, 'shift'), []);
+    ({ engine, t } = restart(engine, t));
+    t = run(engine, t, t + 3 * MINUTE, SECOND, () => [[rtt, 0.4 + 0.002 * rand()]]);
+    assert.ok(detectors(engine).includes(`shift:${rtt}`), 'still bad once start-up is over: reported');
   });
 
   it('applies an operating state as it stands when start-up is over, not each value on the way', () => {

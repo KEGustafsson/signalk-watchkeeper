@@ -1130,8 +1130,11 @@ reported as dropouts or failovers. About 1.2 MB per 1,000 paths.
   when the server starts, and some pass through another state on the way (a
   link that reads "down" until it has connected). For those 2 minutes,
   switches are not counted toward cycling; a value never seen before is a
-  new state only if the path still holds it when they are over; and an
-  operating state that changes is applied once, as it stands at the end.
+  new state only if the path still holds it when they are over; an
+  operating state that changes is applied once, as it stands at the end;
+  and no new finding opens (a link's round-trip time while it reconnects),
+  except your own watches and findings carried over the restart - what is
+  still there at the end is reported then.
 
 ## Tuning
 
