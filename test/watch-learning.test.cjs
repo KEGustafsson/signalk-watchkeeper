@@ -540,6 +540,7 @@ describe('watch learning: a restart is not news', () => {
     assert.equal(incident.status, 'resolved');
     assert.equal(incident.interrupted, true);
     assert.equal(incident.findings[0].clearedAt, restartedAt);
+    assert.equal(engine.report(t).findings, 1, 'the report counts it, once');
   });
 
   it('opens a new incident for a finding back after a long time down', () => {
@@ -550,6 +551,7 @@ describe('watch learning: a restart is not news', () => {
     t = run(engine, t, t + MINUTE, SECOND, () => [[path, 11.9 + 0.02 * rand()]]);
     ({ engine, t } = restart(engine, t, 45 * MINUTE));
     assert.equal(engine.status().incidents[0].status, 'resolved', 'three quarters of an hour down: what was open then is closed');
+    assert.equal(engine.report(t).findings, 1, 'and logged, so the report counts it');
     t = run(engine, t, t + 3 * MINUTE, SECOND, () => [[path, 11.9 + 0.02 * rand()]]);
     assert.equal(engine.status().incidents.length, 2);
   });
@@ -673,6 +675,40 @@ describe('watch learning: a restart is not news', () => {
     t = run(engine, t, t + 20 * SECOND, 5 * SECOND, (now) => [['navigation.state', now - t < 10 * SECOND ? 'motoring' : 'moored']]);
     t = run(engine, t, t + 3 * MINUTE, 10 * SECOND, () => [['navigation.state', 'moored']]);
     assert.deepEqual(engine.status().regimeChanges, []);
+  });
+});
+
+describe('watch learning: review of the fourth commit', () => {
+  function restart(engine, t, gapMs = MINUTE) {
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    const later = t + gapMs;
+    const next = newEngine({}, later);
+    next.importState(saved, later);
+    return { engine: next, t: later };
+  }
+
+  it('does not call a sensor stuck while it sends no value, or while it is silent', () => {
+    for (const quiet of [null, undefined]) {
+      const engine = newEngine();
+      const rand = noise(51);
+      const path = 'environment.inside.engineRoom.temperature';
+      let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 310 + 0.3 * rand()]]);
+      t = run(engine, t, t + 40 * SECOND, SECOND, () => [[path, 310.5]]);
+      t = run(engine, t, t + 15 * MINUTE, SECOND, () => (quiet === null ? [[path, null]] : []));
+      assert.deepEqual(opened(engine, 'frozen'), [], quiet === null ? 'no value' : 'silent');
+      assert.ok(detectors(engine).includes(`dropout:${path}`), 'its dropout reports it');
+    }
+  });
+
+  it('still reports a new state seen on a restart detour after another restart', () => {
+    const camera = 'vision.system.activeCamera';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [[camera, 'aft']]);
+    ({ engine, t } = restart(engine, t));
+    t = run(engine, t, t + 5 * MINUTE, 10 * SECOND, () => [[camera, 'forward']]);
+    ({ engine, t } = restart(engine, t));
+    t = run(engine, t, t + 20 * MINUTE, 10 * SECOND, () => [[camera, 'forward']]);
+    assert.ok(opened(engine, 'newState').some((entry) => entry.path === camera), detectors(engine).join(', '));
   });
 });
 
