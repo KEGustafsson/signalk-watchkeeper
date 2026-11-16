@@ -39,8 +39,21 @@ still reported.
 - `…Yesterday` figures are a default exclusion: they change at midnight by
   design.
 
+- **A restart is not news.** A finding open when the plugin stopped carries
+  on as the same finding, in the same incident, if its condition is back
+  within 10 minutes of a restart (and the save is under 30 minutes old). For
+  the first 2 minutes after start, states that plugins announce again are not
+  counted as switching, a new state must still hold when they are over, and
+  an operating state is applied once, as it stands then.
+- **A flapping operating state waits.** A gate that changed more than 4 times
+  in the last hour is applied only once it has held one state for 10 minutes,
+  so a charger hunting between modes does not keep the electrical paths
+  re-learning all day.
+
 ### Changed
 
+- The charger, inverter and alternator gates also match the singular names
+  (`electrical.charger.<id>.chargingMode`).
 - **Stuck sensors are judged by how long the path itself holds a value**, per
   operating state, instead of by how often it changes. A counter that ticks
   in bursts, or a stopped engine's temperature sitting on one reading for an

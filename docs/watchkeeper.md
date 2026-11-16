@@ -374,7 +374,7 @@ interface saying 0 rpm) does not flip the state back and forth:
 | --- | --- | --- | --- |
 | `propulsion.<id>.revolutions` | `running` above 0.5 Hz (30 rpm), else `stopped` | `propulsion.<id>.`, `electrical.`, `tanks.fuel.` | 15 min |
 | `propulsion.<id>.state` | its value | same | 15 min |
-| `electrical.{chargers,inverters,solar,alternators,ac}.<id>.{chargingMode,mode,state}` | its value | `electrical.` | 10 min |
+| `electrical.{charger(s),inverter(s),solar,alternator(s),ac}.<id>.{chargingMode,mode,state}` | its value | `electrical.` | 10 min |
 | `navigation.state` | its value | `propulsion.`, `electrical.`, `tanks.` | 10 min |
 | The sun at the vessel (`watchkeeper.daylight`), worked out from `navigation.position` and the time | `day` with the sun 3° or more above the horizon, `night` 7° or more below it, `twilight` between (with 0.5° of hysteresis at each boundary) | `electrical.solar.` | through twilight, and 15 min after it |
 
@@ -388,6 +388,13 @@ northern winter, all night near midsummer), and are judged again once the
 sun is clearly up or down. Only the night's baseline is restored (panels at
 0 V are the same every night); a day's depends on the weather and the season
 and is learned afresh each morning.
+
+**A flapping gate waits.** A gate that has changed more than 4 times in the
+last hour (a solar charger hunting between `bulk` and `off` in poor light,
+several times a minute) is held: its changes are applied only once it has
+kept one state for 10 minutes. Without that, every change would start the
+paths it affects re-learning, and they would be watched by nothing all day.
+A gate that changes rarely, like an engine starting, still acts at once.
 
 On a change, every affected path:
 
@@ -1108,8 +1115,23 @@ feedback, mutes and the current operating states.
 
 On start, a saved state younger than 14 days is restored. Every path's
 last-seen time is reset to now, so the gap while the plugin was down is not
-reported as dropouts or failovers. Incidents that were open are closed and
-marked *plugin restarted*. About 1.2 MB per 1,000 paths.
+reported as dropouts or failovers. About 1.2 MB per 1,000 paths.
+
+**A restart is not news.**
+
+- *Open findings carry over.* After a restart within 30 minutes of the last
+  save, a finding that was open is the same finding if its condition is back
+  within 10 minutes: opened when it first opened, in the same incident,
+  counted once in the report. Its notification is raised again, because the
+  server's went with the restart. One that does not come back is closed as
+  of the restart, and its incident is marked *plugin restarted*. After a
+  longer time down, incidents that were open are closed at once, as before.
+- *Start-up settles for 2 minutes.* Every plugin announces its values again
+  when the server starts, and some pass through another state on the way (a
+  link that reads "down" until it has connected). For those 2 minutes,
+  switches are not counted toward cycling; a value never seen before is a
+  new state only if the path still holds it when they are over; and an
+  operating state that changes is applied once, as it stands at the end.
 
 ## Tuning
 

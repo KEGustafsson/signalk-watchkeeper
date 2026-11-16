@@ -18,6 +18,8 @@ const SECOND = 1000;
 const MINUTE = 60 * SECOND;
 const HOUR = 60 * MINUTE;
 const T0 = Date.parse('2026-06-01T08:00:00Z');
+// The most operating changes a flapping gate makes before it is held.
+const GATE_LIMIT = 5;
 
 function noise(seed = 1) {
   let state = seed >>> 0;
@@ -493,5 +495,125 @@ describe('watch learning: across a restart', () => {
     assert.equal(again.habits['shift+'].past.length, 1);
     assert.ok(again.runRecords[''].count >= 30);
     assert.ok(detectors(restarted).includes(`frozen:${path}`), 'the runs it learned before the restart judge a freeze after it');
+  });
+});
+
+describe('watch learning: a restart is not news', () => {
+  function restart(engine, t, gapMs = MINUTE) {
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    const later = t + gapMs;
+    const next = newEngine({}, later);
+    assert.equal(next.importState(saved, later), true);
+    return { engine: next, t: later };
+  }
+
+  it('carries an open finding over a restart as the same finding, in the same incident', () => {
+    const rand = noise(21);
+    const path = 'electrical.batteries.house.voltage';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.9 + 0.02 * rand()]]);
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 11.9 + 0.02 * rand()]]);
+    const before = engine.status().activeFindings.find((item) => item.detector === 'shift');
+    assert.ok(before);
+    ({ engine, t } = restart(engine, t));
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 11.9 + 0.02 * rand()]]);
+    const after = engine.status().activeFindings.find((item) => item.detector === 'shift');
+    assert.ok(after, 'still low, still reported');
+    assert.equal(after.openedAt, before.openedAt);
+    assert.equal(after.incidentId, before.incidentId);
+    assert.equal(engine.status().incidents.length, 1, 'not a second incident');
+    assert.equal(engine.notificationStates().get(path).state, 'alert', 'its notification is raised again');
+    assert.equal(engine.report(t).findings, 1);
+  });
+
+  it('closes a carried finding that does not come back, as of the restart', () => {
+    const rand = noise(22);
+    const path = 'electrical.batteries.house.voltage';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.9 + 0.02 * rand()]]);
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 11.9 + 0.02 * rand()]]);
+    let restartedAt;
+    ({ engine, t } = restart(engine, t));
+    restartedAt = t;
+    t = run(engine, t, t + 12 * MINUTE, SECOND, () => [[path, 12.9 + 0.02 * rand()]]);
+    const incident = engine.status().incidents[0];
+    assert.equal(incident.status, 'resolved');
+    assert.equal(incident.interrupted, true);
+    assert.equal(incident.findings[0].clearedAt, restartedAt);
+  });
+
+  it('opens a new incident for a finding back after a long time down', () => {
+    const rand = noise(23);
+    const path = 'electrical.batteries.house.voltage';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.9 + 0.02 * rand()]]);
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 11.9 + 0.02 * rand()]]);
+    ({ engine, t } = restart(engine, t, 45 * MINUTE));
+    assert.equal(engine.status().incidents[0].status, 'resolved', 'three quarters of an hour down: what was open then is closed');
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 11.9 + 0.02 * rand()]]);
+    assert.equal(engine.status().incidents.length, 2);
+  });
+
+  it('does not count states re-announced at start-up as switching, restart after restart', () => {
+    const path = 'control.remoteController.hh.linkUp';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 7 * HOUR, 10 * SECOND, () => [[path, true]]);
+    for (let index = 0; index < 3; index += 1) {
+      ({ engine, t } = restart(engine, t));
+      // The link reads down until it has connected.
+      t = run(engine, t, t + 20 * SECOND, 5 * SECOND, (now) => [[path, now - t < 10 * SECOND ? false : true]]);
+      t = run(engine, t, t + 5 * MINUTE, 10 * SECOND, () => [[path, true]]);
+    }
+    assert.deepEqual(opened(engine, 'cycling'), []);
+  });
+
+  it('reports a new state seen at start-up only if the path still holds it afterward', () => {
+    const camera = 'vision.system.activeCamera';
+    const link = 'plugins.link.status';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [[camera, 'aft'], [link, 'up']]);
+    ({ engine, t } = restart(engine, t));
+    t = run(engine, t, t + 30 * SECOND, 5 * SECOND, (now) => [[camera, 'forward'], [link, now - t < 15 * SECOND ? 'connecting' : 'up']]);
+    assert.deepEqual(detectors(engine), [], 'nothing during start-up');
+    t = run(engine, t, t + 3 * MINUTE, 10 * SECOND, () => [[camera, 'forward'], [link, 'up']]);
+    assert.deepEqual(detectors(engine), [`newState:${camera}`], 'the camera that stayed is news; the link that passed through "connecting" is not');
+  });
+
+  it('applies an operating state as it stands when start-up is over, not each value on the way', () => {
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [['navigation.state', 'moored']]);
+    ({ engine, t } = restart(engine, t));
+    t = run(engine, t, t + 20 * SECOND, 5 * SECOND, (now) => [['navigation.state', now - t < 10 * SECOND ? 'motoring' : 'moored']]);
+    t = run(engine, t, t + 3 * MINUTE, 10 * SECOND, () => [['navigation.state', 'moored']]);
+    assert.deepEqual(engine.status().regimeChanges, []);
+  });
+});
+
+describe('watch learning: a charger as this boat names it, and one that flaps', () => {
+  const mode = 'electrical.charger.house.chargingMode';
+  const voltage = 'electrical.victron.dcdc.voltageIn';
+
+  it('takes electrical.charger.<id>.chargingMode for an operating state of the electrical paths', () => {
+    const engine = newEngine();
+    const rand = noise(31);
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [[mode, 'bulk'], [voltage, 13.9 + 0.02 * rand()]]);
+    // The charger stops at dusk and the battery settles lower: expected.
+    t = run(engine, t, t + 20 * MINUTE, 10 * SECOND, () => [[mode, 'off'], [voltage, 13.3 + 0.02 * rand()]]);
+    assert.ok(engine.status().regimeChanges.some((change) => change.path === mode && change.to === 'off'));
+    assert.deepEqual(opened(engine, 'shift'), []);
+  });
+
+  it('does not keep the electrical paths re-learning all day while the charger hunts', () => {
+    const engine = newEngine();
+    const rand = noise(32);
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [[mode, 'off'], [voltage, 13.3 + 0.02 * rand()]]);
+    // Hunting between bulk and off every 20 s, for three hours.
+    t = run(engine, t, t + 3 * HOUR, 10 * SECOND, (now) => [[mode, Math.floor(now / (20 * SECOND)) % 2 ? 'bulk' : 'off'], [voltage, 13.6 + 0.02 * rand()]]);
+    const changes = engine.status().regimeChanges.filter((change) => change.path === mode).length;
+    assert.ok(changes <= GATE_LIMIT, `${changes} operating changes`);
+    assert.equal(engine.inventory(t).paths.find((item) => item.path === voltage).role, 'watching', 'still watched while the charger hunts');
+    // It settles: bulk for good, applied once it has held.
+    t = run(engine, t, t + 15 * MINUTE, 10 * SECOND, () => [[mode, 'bulk'], [voltage, 13.9 + 0.02 * rand()]]);
+    assert.equal(engine.status().regimeChanges[0].to, 'bulk');
   });
 });
