@@ -947,10 +947,54 @@ describe('watch learning: a transponder that rounds its own position', () => {
     assert.deepEqual(opened(engine, 'gnss.jump'), []);
   });
 
+  it('still reports a jump between fixes that only look rounded, once the next fix stays there', () => {
+    // As numbers, "60.0000" and "60.0100" are 60 and 60.01: no rounding is to be read into that.
+    const engine = newEngine();
+    let t = run(engine, T0, T0 + 10 * MINUTE, SECOND, () => [['navigation.position', { latitude: 60, longitude: 22.123456 }, 'gps']]);
+    t = run(engine, t, t + 30 * SECOND, SECOND, () => [['navigation.position', { latitude: 60.01, longitude: 22.123456 }, 'gps']]);
+    assert.ok(opened(engine, 'gnss.jump').length > 0, detectors(engine).join(', '));
+  });
+
+  it('still reports an eastward jump from a fix with a coarse latitude', () => {
+    const engine = newEngine();
+    let t = run(engine, T0, T0 + 10 * MINUTE, SECOND, () => [['navigation.position', { latitude: 60.28, longitude: 22.123456 }, 'gps']]);
+    t = run(engine, t, t + 30 * SECOND, SECOND, () => [['navigation.position', { latitude: 60.280001, longitude: 22.132456 }, 'gps']]);
+    assert.ok(opened(engine, 'gnss.jump').length > 0, detectors(engine).join(', '));
+    assert.match(opened(engine, 'gnss.jump')[0].message, /49\d m between fixes/, 'the whole distance, not a reduced one');
+  });
+
+  it('reports a jump whose source then falls silent', () => {
+    const engine = newEngine();
+    let t = run(engine, T0, T0 + 10 * MINUTE, SECOND, () => [['navigation.position', { latitude: 60.28056333333333, longitude: 22.28656 }, 'gps']]);
+    engine.ingest('navigation.position', { latitude: 60.29056333333333, longitude: 22.28656 }, t + SECOND, 'gps');
+    t = run(engine, t + 2 * SECOND, t + 20 * SECOND, SECOND, () => []);
+    assert.ok(opened(engine, 'gnss.jump').length > 0, detectors(engine).join(', '));
+  });
+
   it('still reports a real jump between precise fixes', () => {
     const engine = newEngine();
     let t = run(engine, T0, T0 + 10 * MINUTE, SECOND, () => [['navigation.position', { latitude: 60.28056333333333, longitude: 22.28656 }, 'gps']]);
     t = run(engine, t, t + 30 * SECOND, SECOND, () => [['navigation.position', { latitude: 60.29056333333333, longitude: 22.28656 }, 'gps']]);
     assert.ok(opened(engine, 'gnss.jump').length > 0, detectors(engine).join(', '));
+  });
+});
+
+describe('watch learning: a sender that rounds its readings', () => {
+  it('does not report a reading rounded to whole percent stepping once', () => {
+    const engine = newEngine();
+    const path = 'environment.nano.sd.utilisation';
+    // Disk use, sent as a ratio to two decimals: 0.29 for hours, then 0.3.
+    let t = run(engine, T0, T0 + 3 * HOUR, 10 * SECOND, () => [[path, 0.29]]);
+    t = run(engine, t, t + 10 * MINUTE, 10 * SECOND, () => [[path, 0.3]]);
+    assert.deepEqual(opened(engine, 'shift'), []);
+  });
+
+  it('still reports a real step of a reading sent with many decimals', () => {
+    const engine = newEngine();
+    const rand = noise(57);
+    const path = 'plugins.example.reading';
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [[path, 0.29 + 0.0001 * rand()]]);
+    t = run(engine, t, t + 2 * MINUTE, 10 * SECOND, () => [[path, 0.32 + 0.0001 * rand()]]);
+    assert.ok(detectors(engine).includes(`shift:${path}`), detectors(engine).join(', '));
   });
 });

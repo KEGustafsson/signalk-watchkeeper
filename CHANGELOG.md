@@ -78,9 +78,13 @@ still reported.
 
 ### Fixed
 
-- A position fix rounded to a few decimals between precise ones from the
-  same source (an AIS transponder's own position as it starts) is no longer
-  a GNSS jump: what its rounding can be off by is taken off the distance.
+- One bad position fix between good ones from the same source (an AIS
+  transponder's own position, rounded, as it starts) is no longer a GNSS
+  jump: a jump waits for the source's next fix, and one that is back where
+  the vessel was is the bad fix, not the vessel.
+- A reading its sender rounds (disk use sent as 0.29, then 0.3) is judged
+  with the rounding step as its noise floor, learned from the decimals it
+  is sent with at its baseline, before a step has been seen three times.
 
 - The noise floor of a path that sits at zero collapsed to 1e-9 once its mean
   had decayed to a tiny non-zero value after a spike, so rounding noise read
