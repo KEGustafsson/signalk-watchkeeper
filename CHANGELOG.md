@@ -41,7 +41,7 @@ still reported.
 
 - **A restart is not news.** A finding open when the plugin stopped carries
   on as the same finding, in the same incident, if its condition is back
-  within 10 minutes of a restart (and the save is under 30 minutes old). For
+  within 20 minutes of a restart (and the save is under 30 minutes old). For
   the first 2 minutes after start, states that plugins announce again are not
   counted as switching, a new state must still hold when they are over, an
   operating state is applied once, as it stands then, and no new finding

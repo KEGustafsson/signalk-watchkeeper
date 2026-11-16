@@ -1124,7 +1124,7 @@ reported as dropouts or failovers. About 1.2 MB per 1,000 paths.
 
 - *Open findings carry over.* After a restart within 30 minutes of the last
   save, a finding that was open is the same finding if its condition is back
-  within 10 minutes: opened when it first opened, in the same incident,
+  within 20 minutes (longer than paths are given to be heard again, below): opened when it first opened, in the same incident,
   counted once in the report. Its notification is raised again, because the
   server's went with the restart. One that does not come back is closed as
   of the restart, and its incident is marked *plugin restarted*. After a

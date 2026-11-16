@@ -570,7 +570,7 @@ describe('watch learning: a restart is not news', () => {
     let restartedAt;
     ({ engine, t } = restart(engine, t));
     restartedAt = t;
-    t = run(engine, t, t + 12 * MINUTE, SECOND, () => [[path, 12.9 + 0.02 * rand()]]);
+    t = run(engine, t, t + 22 * MINUTE, SECOND, () => [[path, 12.9 + 0.02 * rand()]]);
     const incident = engine.status().incidents[0];
     assert.equal(incident.status, 'resolved');
     assert.equal(incident.interrupted, true);
@@ -762,6 +762,22 @@ describe('watch learning: review of the fourth commit', () => {
     assert.ok(after > before, `${after} > ${before}`);
   });
 
+  it('carries a long-dead sensor\'s dropout over a restart, rather than reporting it anew', () => {
+    const rand = noise(55);
+    const path = 'navigation.underKeel.clearance';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [[path, 3 + 0.05 * rand()]]);
+    t = run(engine, t, t + 30 * MINUTE, 10 * SECOND, () => [[path, null]]);
+    const before = engine.status().activeFindings.find((item) => item.detector === 'dropout');
+    assert.ok(before);
+    ({ engine, t } = restart(engine, t));
+    t = run(engine, t, t + 25 * MINUTE, 10 * SECOND, () => [[path, null]]);
+    const after = engine.status().activeFindings.find((item) => item.detector === 'dropout');
+    assert.ok(after);
+    assert.equal(after.openedAt, before.openedAt, 'the same finding');
+    assert.equal(engine.status().incidents.length, 1, 'not a new incident');
+  });
+
   it('waits for a sensor a plugin takes minutes to hear again after a restart, and reports one that never comes back', () => {
     const rand = noise(54);
     const slow = 'environment.inside.bedroom.temperature';
@@ -770,8 +786,14 @@ describe('watch learning: review of the fourth commit', () => {
     let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [[slow, 280 + 0.1 * rand()], [dead, 290 + 0.1 * rand()]]);
     ({ engine, t } = restart(engine, t));
     const start = t;
-    // The bedroom sensor sends no value for six minutes; the cabin's never reads again.
-    t = run(engine, t, t + 12 * MINUTE, 10 * SECOND, (now) => [[slow, now - start < 6 * MINUTE ? null : 280 + 0.1 * rand()]]);
+    // The server re-announces both sensors' last values as it starts; then
+    // the bedroom sensor sends no value for six minutes and the cabin's never
+    // reads again.
+    const last = engine.exportState(t).paths;
+    const cached = (path) => last.find((item) => item.path === path).last;
+    engine.ingest(slow, cached(slow), t, 'bedroom');
+    engine.ingest(dead, cached(dead), t, 'cabin');
+    t = run(engine, t + SECOND, t + 12 * MINUTE, 10 * SECOND, (now) => [[slow, now - start < 6 * MINUTE ? null : 280 + 0.1 * rand()]]);
     assert.deepEqual(opened(engine, 'dropout'), [], 'nothing while they are reacquired');
     t = run(engine, t, start + 16 * MINUTE, 10 * SECOND, () => [[slow, 280 + 0.1 * rand()]]);
     assert.deepEqual(detectors(engine), [`dropout:${dead}`], 'the one that never came back is reported once reacquiring is over');
