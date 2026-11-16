@@ -45,7 +45,10 @@ still reported.
   the first 2 minutes after start, states that plugins announce again are not
   counted as switching, a new state must still hold when they are over, an
   operating state is applied once, as it stands then, and no new finding
-  opens (your own watches excepted) until they are over.
+  opens (your own watches excepted) until they are over. A state path's
+  switches are not counted until it is back on its value from before the
+  restart (15 minutes at most), as some plugins take minutes to settle; how
+  long a sensor has had no value is kept across a restart.
 - **A flapping operating state waits.** A gate that changed more than 4 times
   in the last hour is applied only once it has held one state for 10 minutes,
   so a charger hunting between modes does not keep the electrical paths

@@ -576,6 +576,8 @@ describe('watch learning: a restart is not news', () => {
     t = run(engine, t, t + 30 * SECOND, 5 * SECOND, (now) => [[camera, 'forward'], [link, now - t < 15 * SECOND ? 'connecting' : 'up']]);
     assert.deepEqual(detectors(engine), [], 'nothing during start-up');
     t = run(engine, t, t + 3 * MINUTE, 10 * SECOND, () => [[camera, 'forward'], [link, 'up']]);
+    assert.deepEqual(detectors(engine), [], 'nor while the camera may still go back to where it was');
+    t = run(engine, t, t + 13 * MINUTE, 10 * SECOND, () => [[camera, 'forward'], [link, 'up']]);
     assert.deepEqual(detectors(engine), [`newState:${camera}`], 'the camera that stayed is news; the link that passed through "connecting" is not');
   });
 
@@ -592,6 +594,47 @@ describe('watch learning: a restart is not news', () => {
     ({ engine, t } = restart(engine, t));
     t = run(engine, t, t + 3 * MINUTE, SECOND, () => [[rtt, 0.4 + 0.002 * rand()]]);
     assert.ok(detectors(engine).includes(`shift:${rtt}`), 'still bad once start-up is over: reported');
+  });
+
+  it('does not count a plugin that takes minutes to settle after a restart as switching', () => {
+    const path = 'navigation.underKeel.state';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 7 * HOUR, 10 * SECOND, () => [[path, 'alarm']]);
+    const before = engine.exportState(t).paths.find((item) => item.path === path).transitionTotal;
+    for (let index = 0; index < 3; index += 1) {
+      ({ engine, t } = restart(engine, t));
+      const start = t;
+      // "off" until it has worked out its first clearance, five minutes in.
+      t = run(engine, t, t + 12 * MINUTE, 10 * SECOND, (now) => [[path, now - start < 5 * MINUTE ? 'off' : 'alarm']]);
+    }
+    assert.equal(engine.exportState(t).paths.find((item) => item.path === path).transitionTotal, before);
+    assert.deepEqual(opened(engine, 'cycling'), []);
+  });
+
+  it('counts one change for a state path that does not go back after a restart', () => {
+    const path = 'electrical.charger.house.chargingMode';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [[path, 'bulk']]);
+    const before = engine.exportState(t).paths.find((item) => item.path === path).transitionTotal;
+    ({ engine, t } = restart(engine, t));
+    // Restarted again while still on the detour: it is judged from "bulk", not "off".
+    t = run(engine, t, t + 5 * MINUTE, 10 * SECOND, () => [[path, 'off']]);
+    ({ engine, t } = restart(engine, t));
+    t = run(engine, t, t + 20 * MINUTE, 10 * SECOND, () => [[path, 'off']]);
+    assert.equal(engine.exportState(t).paths.find((item) => item.path === path).transitionTotal, before + 1);
+  });
+
+  it('says how long a sensor has had no value, across a restart', () => {
+    const rand = noise(25);
+    const path = 'navigation.underKeel.clearance';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [[path, 3 + 0.05 * rand()]]);
+    t = run(engine, t, t + 30 * MINUTE, 10 * SECOND, () => [[path, null]]);
+    ({ engine, t } = restart(engine, t));
+    t = run(engine, t, t + 5 * MINUTE, 10 * SECOND, () => [[path, null]]);
+    const finding = engine.status().activeFindings.find((item) => item.detector === 'dropout');
+    assert.ok(finding, detectors(engine).join(', '));
+    assert.match(finding.message, /No reading for 3[67] min/);
   });
 
   it('applies an operating state as it stands when start-up is over, not each value on the way', () => {

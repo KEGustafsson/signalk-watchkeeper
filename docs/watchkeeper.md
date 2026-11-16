@@ -1138,6 +1138,16 @@ reported as dropouts or failovers. About 1.2 MB per 1,000 paths.
   and no new finding opens (a link's round-trip time while it reconnects),
   except your own watches and findings carried over the restart - what is
   still there at the end is reported then.
+- *State paths follow their restart detour.* Some plugins take minutes to
+  settle (an under-keel plugin reads "off" until it has worked out its
+  first clearance). Until a state path is back on the value it had before
+  the restart, for 15 minutes at most, its switches are not counted and a
+  value first seen then waits. Back on it, nothing on the way was news; not
+  back by then, it is one change (and a new state, if the value is new). A
+  restart during a detour keeps the value from before the first.
+- *"No value" keeps its start.* A sensor sending `null` when the plugin
+  stopped is still said to have had no value since then; its dropout still
+  counts from the restart.
 
 ## Tuning
 
