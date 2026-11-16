@@ -735,6 +735,32 @@ describe('watch learning: review of the fourth commit', () => {
     }
   });
 
+  it('clears a stuck finding when the sensor then falls silent, and reports the silence', () => {
+    const engine = newEngine();
+    const rand = noise(52);
+    const path = 'environment.inside.engineRoom.temperature';
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 310 + 0.3 * rand()]]);
+    t = run(engine, t, t + 7 * MINUTE, SECOND, () => [[path, 310.5]]);
+    assert.ok(detectors(engine).includes(`frozen:${path}`), 'stuck while it repeats');
+    t = run(engine, t, t + 3 * MINUTE, SECOND, () => []);
+    assert.ok(!detectors(engine).includes(`frozen:${path}`), 'not while it is silent');
+    assert.ok(detectors(engine).includes(`dropout:${path}`));
+  });
+
+  it('keeps following an episode carried over a restart after start-up', () => {
+    const rand = noise(53);
+    const path = 'networking.edgeLink.boat.jitter';
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 5 + rand()]]);
+    // A departure in progress when the plugin restarts, which grows after.
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 15 + rand()]]);
+    const before = engine.exportState(t).paths.find((item) => item.path === path).habits['shift+'].open.peak;
+    ({ engine, t } = restart(engine, t));
+    t = run(engine, t, t + 5 * MINUTE, SECOND, () => [[path, 40 + rand()]]);
+    const after = engine.exportState(t).paths.find((item) => item.path === path).habits['shift+'].open.peak;
+    assert.ok(after > before, `${after} > ${before}`);
+  });
+
   it('still reports a new state seen on a restart detour after another restart', () => {
     const camera = 'vision.system.activeCamera';
     let engine = newEngine();
