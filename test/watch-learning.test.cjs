@@ -905,3 +905,23 @@ describe('watch learning: review of the first two commits', () => {
     assert.match(finding.message, /after not counting at all in the past week/);
   });
 });
+
+describe('watch learning: a transponder that rounds its own position', () => {
+  it('does not take a fix rounded to a few decimals, between precise ones, for a jump', () => {
+    const engine = newEngine();
+    const precise = { latitude: 60.28056333333333, longitude: 22.28656 };
+    let t = run(engine, T0, T0 + 10 * MINUTE, SECOND, () => [['navigation.position', precise, 'Arabella AIS.AI']]);
+    // As it starts: 60.28, 22.285 - 106 m from the boat by its rounding alone.
+    engine.ingest('navigation.position', { latitude: 60.28, longitude: 22.285 }, t + 10, 'Arabella AIS.AI');
+    engine.ingest('navigation.position', precise, t + 30, 'Arabella AIS.AI');
+    t = run(engine, t + SECOND, t + MINUTE, SECOND, () => [['navigation.position', precise, 'Arabella AIS.AI']]);
+    assert.deepEqual(opened(engine, 'gnss.jump'), []);
+  });
+
+  it('still reports a real jump between precise fixes', () => {
+    const engine = newEngine();
+    let t = run(engine, T0, T0 + 10 * MINUTE, SECOND, () => [['navigation.position', { latitude: 60.28056333333333, longitude: 22.28656 }, 'gps']]);
+    t = run(engine, t, t + 30 * SECOND, SECOND, () => [['navigation.position', { latitude: 60.29056333333333, longitude: 22.28656 }, 'gps']]);
+    assert.ok(opened(engine, 'gnss.jump').length > 0, detectors(engine).join(', '));
+  });
+});

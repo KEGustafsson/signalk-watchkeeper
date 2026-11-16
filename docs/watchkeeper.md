@@ -311,7 +311,7 @@ indicator uses evidence the receiver does not control:
 
 | Indicator | Fires when | Persist / clear |
 | --- | --- | --- |
-| `jump` | Two consecutive fixes from one source are more than 100 m apart **and** imply more than 40 kn. `alert` above 5 km. Held 10 min | immediate |
+| `jump` | Two consecutive fixes from one source are more than 100 m apart **and** imply more than 40 kn. When one of the two has at least two fewer decimals than the other (an AIS transponder sending its own position as 60.28, 22.285 as it starts), what its rounding alone can be off by (half its last digit, about 560 m for 0.01° of latitude) is taken off first. `alert` above 5 km. Held 10 min | immediate |
 | `deadReckoning` | The fix is further from dead reckoning (true heading + speed through water, integrated from an agreeing fix) than **150 m + 25 % of distance run + 2 kn × elapsed time**. Heading and log must be fresh (≤ 5 s). The reference is re-anchored every 10 minutes, and only on a fix that agrees, so a spoofed position never becomes the reference | 30 s / 60 s |
 | `sourcesDisagree` | Two position sources updated within 10 s of each other are more than 100 m apart | 30 s / 60 s |
 | `quality` | Fewer than 4 satellites, or horizontal dilution above 5, on a receiver that has reported at least 6 satellites or dilution below 2 at least 20 times | 30 s / 60 s |

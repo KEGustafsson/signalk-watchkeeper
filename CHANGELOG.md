@@ -78,6 +78,10 @@ still reported.
 
 ### Fixed
 
+- A position fix rounded to a few decimals between precise ones from the
+  same source (an AIS transponder's own position as it starts) is no longer
+  a GNSS jump: what its rounding can be off by is taken off the distance.
+
 - The noise floor of a path that sits at zero collapsed to 1e-9 once its mean
   had decayed to a tiny non-zero value after a spike, so rounding noise read
   as thousands of spreads and kept the finding open. While the mean is within
