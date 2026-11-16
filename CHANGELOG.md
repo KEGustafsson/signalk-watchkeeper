@@ -63,7 +63,9 @@ still reported.
 - **Stuck sensors are judged by how long the path itself holds a value**, per
   operating state, instead of by how often it changes. A counter that ticks
   in bursts, or a stopped engine's temperature sitting on one reading for an
-  hour, is no longer stuck; a freeze while the engine runs still is.
+  hour, is no longer stuck; a freeze while the engine runs still is. A hold
+  is judged only against enough of the path's history: six times the limit
+  in learned runs, and a day of them for a limit above 5 minutes.
 - **Measurements are never state codes.** A whole-number signal strength
   (`rssi`, `rsrp`, `rsrq`, `sinr`, `snr`, dB, dBm), jitter, latency, loss or
   any path with a measurement's name or unit is continuous, so a new reading

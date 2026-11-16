@@ -182,6 +182,41 @@ describe('watch learning: how long a path holds one value', () => {
     assert.match(engine.status().activeFindings.find((item) => item.detector === 'frozen').message, /normally holds a value for \d+ s at most/);
   });
 
+  it('does not call a slow sensor stuck from an evening of watching it', () => {
+    const engine = newEngine();
+    const path = 'propulsion.raw_water.temperature';
+    // Sea water at the dock: a quarter-degree step every few minutes in the
+    // evening, then the calm of the night on one reading for fifty minutes.
+    let value = 281;
+    let t = run(engine, T0, T0 + 3 * HOUR, 10 * SECOND, (now) => {
+      if ((now - T0) % (7 * MINUTE) === 0) value = value === 281 ? 281.25 : 281;
+      return [[path, value]];
+    });
+    t = run(engine, t, t + 50 * MINUTE, 10 * SECOND, () => [[path, 281]]);
+    assert.deepEqual(opened(engine, 'frozen'), []);
+  });
+
+  it('still reports a slow sensor stuck far longer than a day of watching says it ever holds', () => {
+    const engine = newEngine();
+    const path = 'propulsion.raw_water.temperature';
+    let value = 281;
+    let t = run(engine, T0, T0 + 30 * HOUR, 10 * SECOND, (now) => {
+      if ((now - T0) % (7 * MINUTE) === 0) value = value === 281 ? 281.25 : 281;
+      return [[path, value]];
+    });
+    t = run(engine, t, t + 3 * HOUR, 10 * SECOND, () => [[path, 281.25]]);
+    assert.ok(detectors(engine).includes(`frozen:${path}`), detectors(engine).join(', '));
+  });
+
+  it('starts the day of a hold record saved before records knew when they began', () => {
+    const saved = {
+      path: 'propulsion.raw_water.temperature',
+      kind: 'continuous',
+      runRecords: { '': { bins: new Array(22).fill(0), count: 40, at: T0 - HOUR } }
+    };
+    assert.equal(monitor.importPathState(saved, T0).runRecords[''].since, T0);
+  });
+
   it('does not take a run that an outage interrupted for a value held', () => {
     const state = monitor.createPathState('environment.inside.cabin.temperature', T0);
     const options = { minIntervalMs: 1000, dropoutMinMs: 30000, dropoutFactor: 10 };
