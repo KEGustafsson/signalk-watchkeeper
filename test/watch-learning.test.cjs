@@ -1,0 +1,497 @@
+'use strict';
+
+// What the watch learns from a path's own history, beyond its baseline: the
+// departures it keeps making and coming back from, how long it holds one
+// value, counters that show themselves by their resets and how fast they
+// count, measurements that are never state codes, null as "no value", and
+// day and night as an operating state of everything solar. Each case is a
+// pattern a moored boat's first day of watching raised as noise.
+
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
+const { createWatchEngine, normalizeWatchConfig } = require('../lib/watch/engine.cjs');
+const monitor = require('../lib/watch/path-monitor.cjs');
+const habits = require('../lib/watch/habits.cjs');
+const { sunElevationDeg } = require('../lib/watch/sun.cjs');
+
+const SECOND = 1000;
+const MINUTE = 60 * SECOND;
+const HOUR = 60 * MINUTE;
+const T0 = Date.parse('2026-06-01T08:00:00Z');
+
+function noise(seed = 1) {
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return (state / 0xffffffff) * 2 - 1;
+  };
+}
+
+/** Samples every `stepMs`, a tick every five seconds, as the plugin does. */
+function run(engine, from, to, stepMs, sample) {
+  let nextTick = from;
+  for (let t = from; t < to; t += stepMs) {
+    for (const [path, value, source] of sample(t)) {
+      engine.ingest(path, value, t, source);
+    }
+    if (t >= nextTick) {
+      engine.tick(t);
+      nextTick = t + 5 * SECOND;
+    }
+  }
+  engine.tick(to);
+  return to;
+}
+
+function newEngine(overrides = {}, now = T0) {
+  return createWatchEngine(normalizeWatchConfig({ watchEnabled: true, watchLearningMinutes: 20, ...overrides }), { now });
+}
+
+function detectors(engine) {
+  return engine.status().activeFindings.map((finding) => `${finding.detector}:${finding.path}`);
+}
+
+function opened(engine, detector) {
+  return engine.status().incidents.flatMap((incident) => incident.findings).filter((entry) => entry.detector === detector);
+}
+
+describe('watch learning: departures a path keeps coming back from', () => {
+  const path = 'networking.edgeLink.boat.packetLoss';
+  // A radio link: no loss, and a minute of around 10 % loss every three
+  // hours (never twice quite the same, as real loss is).
+  const spike = (start, value = 0.1, lengthMs = MINUTE) => (t) => [[path, t >= start && t < start + lengthMs ? value : 0]];
+  const SIZES = [0.06, 0.09, 0.13, 0.07, 0.1, 0.14, 0.08, 0.11];
+
+  function blips(engine, from, count, options = {}) {
+    let t = from;
+    const seen = [];
+    for (let index = 0; index < count; index += 1) {
+      const start = t + 3 * HOUR;
+      const value = options.value ?? SIZES[index % SIZES.length];
+      t = run(engine, t, start + 50 * SECOND, 5 * SECOND, spike(start, value, options.lengthMs));
+      seen.push(detectors(engine).includes(`shift:${path}`));
+      t = run(engine, t, start + 30 * MINUTE, 5 * SECOND, spike(start, value, options.lengthMs));
+    }
+    return { t, seen };
+  }
+
+  it('reports the first spikes, then stops once they are a habit, and says so in the report', () => {
+    const engine = newEngine();
+    let t = run(engine, T0, T0 + 30 * MINUTE, 5 * SECOND, () => [[path, 0]]);
+    const { t: after, seen } = blips(engine, t, 8);
+    t = after;
+    assert.deepEqual(seen.slice(0, 3), [true, true, true], 'the first spikes are news');
+    assert.deepEqual(seen.slice(4), [false, false, false, false], `a habit by now: ${seen.join(', ')}`);
+    const report = engine.report(t, 48);
+    assert.ok(report.lines.some((line) => /Learned to expect/.test(line) && /packet loss/i.test(line)), report.lines.join('\n'));
+  });
+
+  it('still reports a spike of a new size, and says what it usually does', () => {
+    const engine = newEngine();
+    let t = run(engine, T0, T0 + 30 * MINUTE, 5 * SECOND, () => [[path, 0]]);
+    t = blips(engine, t, 6).t;
+    const start = t + 3 * HOUR;
+    t = run(engine, t, start + 50 * SECOND, 5 * SECOND, spike(start, 0.6));
+    const finding = engine.status().activeFindings.find((item) => item.detector === 'shift');
+    assert.ok(finding, 'six times the usual loss is news');
+    assert.match(finding.message, /such rises in the past/);
+  });
+
+  it('still reports a spike of the usual size that lasts far longer than usual', () => {
+    const engine = newEngine();
+    let t = run(engine, T0, T0 + 30 * MINUTE, 5 * SECOND, () => [[path, 0]]);
+    t = blips(engine, t, 6).t;
+    const start = t + 3 * HOUR;
+    t = run(engine, t, start + 3 * MINUTE, 5 * SECOND, spike(start, 0.1, HOUR));
+    assert.ok(!detectors(engine).includes(`shift:${path}`), 'three minutes is still about usual');
+    t = run(engine, t, start + 12 * MINUTE, 5 * SECOND, spike(start, 0.1, HOUR));
+    assert.ok(detectors(engine).includes(`shift:${path}`), 'twelve minutes of it is not');
+  });
+
+  it('forgets the habit when the operator says a finding on the path was useful', () => {
+    const engine = newEngine();
+    let t = run(engine, T0, T0 + 30 * MINUTE, 5 * SECOND, () => [[path, 0]]);
+    t = blips(engine, t, 6).t;
+    engine.giveFeedback(path, true, t);
+    const { seen } = blips(engine, t, 1);
+    assert.deepEqual(seen, [true]);
+  });
+
+  it('keeps the noise floor of a path that sits at zero at its resolution, not at 5 % of a vanishing mean', () => {
+    const state = monitor.createPathState(path, T0);
+    // As a decayed spike leaves it: a mean of 1e-13, a resolution of 0.002.
+    Object.assign(state, { kind: 'continuous', mean: 7.5e-13, fast: 5e-14, variance: 1e-23, quantum: 0.002, allInteger: false });
+    assert.equal(monitor.noiseFloor(state), 0.004);
+  });
+
+  it('takes three spikes in one bad hour for an incident, not a habit', () => {
+    const state = monitor.createPathState(path, T0);
+    let t = T0;
+    for (let index = 0; index < 3; index += 1) {
+      habits.follow(state, 'shift+', 20, true, t);
+      t += MINUTE;
+      habits.follow(state, 'shift+', 0, false, t);
+      t += 25 * MINUTE;
+    }
+    assert.equal(habits.usual(state, 'shift+', t), undefined);
+    // The same three, spread over a day, are.
+    const spread = monitor.createPathState(path, T0);
+    t = T0;
+    for (let index = 0; index < 3; index += 1) {
+      habits.follow(spread, 'shift+', 20, true, t);
+      t += MINUTE;
+      habits.follow(spread, 'shift+', 0, false, t);
+      t += 4 * HOUR;
+    }
+    assert.equal(habits.usual(spread, 'shift+', t).count, 3);
+  });
+});
+
+describe('watch learning: how long a path holds one value', () => {
+  it('does not call a counter that ticks in bursts and then sits for hours stuck', () => {
+    const engine = newEngine();
+    const path = 'networking.edgeLink.boat.retransmissions';
+    let value = 5000;
+    // Six retransmissions in a row every 40 minutes, sampled every second.
+    run(engine, T0, T0 + 12 * HOUR, SECOND, (t) => {
+      if ((t - T0) % (40 * MINUTE) < 6 * SECOND) value += 1;
+      return [[path, value]];
+    });
+    assert.deepEqual(opened(engine, 'frozen'), []);
+  });
+
+  it('does not call a stopped engine\'s temperature stuck, and still catches a freeze while it runs', () => {
+    const engine = newEngine();
+    const rpm = 'propulsion.main.revolutions';
+    const path = 'propulsion.main.coolantTemperature';
+    const rand = noise(4);
+    // Stopped for a day: the temperature steps by a quarter of a degree
+    // every half hour, as a cold engine at ambient does.
+    let t = run(engine, T0, T0 + 24 * HOUR, 10 * SECOND, (now) => [
+      [rpm, 0],
+      [path, 288 + 0.25 * (Math.floor((now - T0) / (30 * MINUTE)) % 2)]
+    ]);
+    assert.deepEqual(opened(engine, 'frozen'), [], 'half an hour on one reading is how it sits when stopped');
+    // Running: a lively temperature, then the sender freezes.
+    t = run(engine, t, t + 2 * HOUR, 10 * SECOND, () => [[rpm, 30], [path, 353 + 0.5 * rand()]]);
+    assert.deepEqual(opened(engine, 'frozen'), []);
+    t = run(engine, t, t + 8 * MINUTE, 10 * SECOND, () => [[rpm, 30], [path, 353.2]]);
+    assert.ok(detectors(engine).includes(`frozen:${path}`), 'what it does when stopped does not excuse a freeze while running');
+    assert.match(engine.status().activeFindings.find((item) => item.detector === 'frozen').message, /normally holds a value for \d+ s at most/);
+  });
+
+  it('does not take a run that an outage interrupted for a value held', () => {
+    const state = monitor.createPathState('environment.inside.cabin.temperature', T0);
+    const options = { minIntervalMs: 1000, dropoutMinMs: 30000, dropoutFactor: 10 };
+    let t = T0;
+    for (let index = 0; index < 100; index += 1) monitor.observe(state, 290 + (index % 2), (t += SECOND), options);
+    // Silent for two hours, then back with a new value.
+    monitor.observe(state, 300, (t += 2 * HOUR), options);
+    monitor.observe(state, 301, (t += SECOND), options);
+    const record = state.runRecords[''];
+    assert.equal(record.bins.slice(10).reduce((sum, value) => sum + value, 0), 0, 'no run of an hour or more');
+  });
+});
+
+describe('watch learning: counters that show themselves by their resets', () => {
+  it('takes a count no name says is one, that restarts from zero, for a counter, and stops judging its climb', () => {
+    const engine = newEngine();
+    const path = 'plugins.link.frames';
+    let value = 1e6;
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, () => [[path, (value += 1)]]);
+    const kind = () => engine.inventory(t).paths.find((item) => item.path === path).kind;
+    assert.notEqual(kind(), 'counter', 'a climb alone is never a counter');
+    value = 0;
+    t = run(engine, t, t + 10 * MINUTE, SECOND, () => [[path, (value += 1)]]);
+    assert.equal(kind(), 'counter');
+    t = run(engine, t, t + 2 * HOUR, SECOND, () => [[path, (value += 1)]]);
+    assert.ok(!detectors(engine).some((key) => key.endsWith(path)), detectors(engine).join(', '));
+  });
+
+  it('does not take a reading that glitches to zero and comes straight back for a counter', () => {
+    const state = monitor.createPathState('plugins.example.reading', T0);
+    let t = T0;
+    for (let index = 0; index < 100; index += 1) monitor.observe(state, 50 + index, (t += MINUTE), {});
+    monitor.observe(state, 0, (t += MINUTE), {});
+    for (let index = 0; index < 10; index += 1) monitor.observe(state, 151 + index, (t += MINUTE), {});
+    assert.equal(monitor.isCounterState(state), false);
+    assert.equal(state.resets, 0);
+  });
+
+  it('does not take a reading that drops to zero and stays there for a counter', () => {
+    const state = monitor.createPathState('plugins.example.reading', T0);
+    let t = T0;
+    for (let index = 0; index < 100; index += 1) monitor.observe(state, 50 + index, (t += MINUTE), {});
+    for (let index = 0; index < 20; index += 1) monitor.observe(state, 0, (t += MINUTE), {});
+    assert.equal(monitor.isCounterState(state), false);
+  });
+
+  it('never takes a measurement, or a state code, for a counter by its resets', () => {
+    for (const path of ['electrical.solar.main.panelPower', 'networking.lte.rssi', 'plugins.example.chargerState']) {
+      const state = monitor.createPathState(path, T0);
+      Object.assign(state, { kind: 'continuous', n: 100, rose: true, monotonic: false, resets: 2, falls: 0 });
+      assert.equal(monitor.isCounterState(state), false, path);
+    }
+  });
+
+  it('starts the evidence afresh for a save from before resets were told from falls', () => {
+    const saved = { path: 'plugins.link.frames', kind: 'continuous', n: 5000, rose: true, monotonic: false, rises: 4999 };
+    const state = monitor.importPathState(saved, T0);
+    assert.equal(state.falls, 0);
+    assert.equal(state.resets, 0);
+    assert.equal(monitor.isCounterState(state), false);
+  });
+});
+
+describe('watch learning: resets seen on a moored boat\'s link and modem', () => {
+  it('takes a sequence number that restarts somewhere other than zero for a counter, without a level finding', () => {
+    const engine = newEngine();
+    const path = 'plugins.link.seq';
+    let value = 1.7e9;
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, () => [[path, (value += 7)]]);
+    value = 1.1e9;
+    t = run(engine, t, t + 30 * MINUTE, SECOND, () => [[path, (value += 7)]]);
+    assert.equal(engine.inventory(t).paths.find((item) => item.path === path).kind, 'counter');
+    assert.deepEqual(opened(engine, 'shift'), [], 'the restart is not a drop');
+  });
+
+  it('waits for a slow count that restarts from zero to tick again, rather than reporting the drop', () => {
+    const engine = newEngine();
+    const path = 'plugins.link.resends';
+    let value = 5000;
+    // One more every two minutes, then the link restarts: zero, and the next
+    // one forty minutes later.
+    let t = run(engine, T0, T0 + 2 * HOUR, 10 * SECOND, (now) => [[path, (now - T0) % (2 * MINUTE) === 0 ? (value += 1) : value]]);
+    value = 0;
+    t = run(engine, t, t + 40 * MINUTE, 10 * SECOND, () => [[path, value]]);
+    t = run(engine, t, t + 30 * MINUTE, 10 * SECOND, (now) => [[path, (now - t) % (10 * MINUTE) === 0 ? (value += 1) : value]]);
+    assert.deepEqual(opened(engine, 'shift'), []);
+    assert.equal(engine.inventory(t).paths.find((item) => item.path === path).kind, 'counter');
+  });
+
+  it('knows a modem\'s byte counts and a link\'s retransmissions by name', () => {
+    for (const path of ['networking.lte.usage.rx', 'networking.lte.usage.tx', 'networking.edgeLink.boat.retransmissions', 'networking.wan.rxBytes', 'networking.edgeLink.boat.sequenceNumber']) {
+      const state = monitor.createPathState(path, T0);
+      Object.assign(state, { kind: 'continuous', n: 100, rose: true, monotonic: true, rises: 100 });
+      assert.equal(monitor.isCounterState(state), true, path);
+    }
+  });
+
+  it('learns again whether a saved counter falls, once', () => {
+    const state = monitor.importPathState({ path: 'networking.lte.usage.rx', kind: 'continuous', n: 9000, rose: true, monotonic: false, rises: 8900 }, T0);
+    assert.equal(state.monotonic, true);
+    assert.equal(monitor.isCounterState(state), true);
+    const again = monitor.importPathState(JSON.parse(JSON.stringify(monitor.exportPathState({ ...state, monotonic: false }))), T0);
+    assert.equal(again.monotonic, false, 'a fall learned since is kept');
+  });
+
+  it('does not watch yesterday\'s figures, which change at midnight by design', () => {
+    const engine = newEngine();
+    const t = run(engine, T0, T0 + MINUTE, 10 * SECOND, () => [['electrical.solar.main.maximumPowerYesterday', 11]]);
+    assert.equal(engine.inventory(t).paths.find((item) => item.path === 'electrical.solar.main.maximumPowerYesterday').role, 'skipped');
+  });
+
+  it('gets used to a sensor that has spells of no value, and still reports one that lasts far longer', () => {
+    const engine = newEngine();
+    const path = 'environment.inside.bedroom.temperature';
+    const rand = noise(10);
+    // Out of range for eight minutes every three hours.
+    const sample = (spellMs) => (now) => [[path, (now - T0) % (3 * HOUR) >= HOUR && (now - T0) % (3 * HOUR) < HOUR + spellMs ? null : 293 + 0.2 * rand()]];
+    let t = run(engine, T0, T0 + 3 * HOUR + HOUR + 7 * MINUTE, 10 * SECOND, sample(8 * MINUTE));
+    assert.ok(detectors(engine).includes(`dropout:${path}`), 'the first spell is reported');
+    t = run(engine, t, T0 + 6 * 3 * HOUR, 10 * SECOND, sample(8 * MINUTE));
+    const before = opened(engine, 'dropout').length;
+    t = run(engine, t, t + 3 * 3 * HOUR, 10 * SECOND, sample(8 * MINUTE));
+    assert.equal(opened(engine, 'dropout').length, before, 'later spells of the usual length are not');
+    const start = T0 + Math.ceil((t - T0) / (3 * HOUR)) * 3 * HOUR + HOUR;
+    t = run(engine, t, start + 40 * MINUTE, 10 * SECOND, (now) => [[path, now >= start ? null : 293 + 0.2 * rand()]]);
+    const finding = engine.status().activeFindings.find((item) => item.detector === 'dropout');
+    assert.ok(finding, 'forty minutes of it is news');
+    assert.match(finding.message, /spells of no value/);
+  });
+});
+
+describe('watch learning: how fast a counter counts', () => {
+  const path = 'networking.modem.rxTotal';
+
+  function steady(engine, from, to, perTenSeconds) {
+    let value = 1e9;
+    const t = run(engine, from, to, 10 * SECOND, (now) => {
+      // Busier in the evening than at night, as traffic is.
+      const hour = new Date(now).getUTCHours();
+      value += perTenSeconds * (hour >= 16 && hour < 22 ? 1.5 : 0.5);
+      return [[path, value]];
+    });
+    return { t, value };
+  }
+
+  it('says nothing for a week-normal pace, and reports a count far beyond its fastest', () => {
+    const engine = newEngine();
+    let { t, value } = steady(engine, T0, T0 + 26 * HOUR, 20000);
+    assert.deepEqual(opened(engine, 'rate'), []);
+    assert.deepEqual(opened(engine, 'shift'), [], 'a counter climbing is not a level shift');
+    t = run(engine, t, t + 15 * MINUTE, 10 * SECOND, () => [[path, (value += 400000)]]);
+    const finding = engine.status().activeFindings.find((item) => item.detector === 'rate');
+    assert.ok(finding, detectors(engine).join(', '));
+    assert.match(finding.title, /counting unusually fast/);
+    assert.match(finding.message, /the fastest it counted in the past week/);
+    // Back to its pace: cleared.
+    t = run(engine, t, t + 30 * MINUTE, 10 * SECOND, () => [[path, (value += 10000)]]);
+    assert.ok(!detectors(engine).includes(`rate:${path}`));
+  });
+
+  it('judges nothing before it has a day of the counter\'s pace', () => {
+    const engine = newEngine();
+    let { t, value } = steady(engine, T0, T0 + 3 * HOUR, 20000);
+    run(engine, t, t + 15 * MINUTE, 10 * SECOND, () => [[path, (value += 400000)]]);
+    assert.deepEqual(opened(engine, 'rate'), []);
+  });
+});
+
+describe('watch learning: measurements are never state codes', () => {
+  it('does not report a signal strength\'s new whole value as a new state', () => {
+    const engine = newEngine();
+    const path = 'networking.lte.rssi';
+    // -42 and -43 dBm for the first hour: few values, all whole.
+    let t = run(engine, T0, T0 + 60 * MINUTE, 10 * SECOND, (now) => [[path, (now / (10 * SECOND)) % 7 === 0 ? -43 : -42]]);
+    t = run(engine, t, t + MINUTE, 10 * SECOND, () => [[path, -36]]);
+    assert.deepEqual(opened(engine, 'newState'), []);
+    assert.equal(engine.inventory(t).paths.find((item) => item.path === path).kind, 'continuous');
+  });
+
+  it('takes a path with a measurement unit for a measurement, from its metadata', () => {
+    const engine = newEngine();
+    const path = 'plugins.example.reading';
+    engine.ingest(path, 3, T0, 'x');
+    engine.setMeta(path, { units: 'dBm' });
+    const t = run(engine, T0 + SECOND, T0 + 40 * MINUTE, 10 * SECOND, (now) => [[path, (now / (10 * SECOND)) % 3 === 0 ? 3 : 4]]);
+    assert.equal(engine.inventory(t).paths.find((item) => item.path === path).kind, 'continuous');
+  });
+
+  it('moves a measurement a save had decided discrete to continuous', () => {
+    const state = monitor.importPathState(
+      { path: 'networking.lte.rsrp', kind: 'discrete', n: 500, distinct: [-70, -75], allInteger: true, seen: { '-70': 300, '-75': 200 } },
+      T0
+    );
+    monitor.observe(state, -80, T0 + SECOND, { minIntervalMs: 1000 });
+    assert.equal(state.kind, 'continuous');
+  });
+
+  it('still keeps the new-state check for a whole-number state code', () => {
+    const engine = newEngine();
+    const path = 'electrical.chargers.house.chargingState';
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, (now) => [[path, (now - T0) % (4 * MINUTE) < 2 * MINUTE ? 3 : 4]]);
+    t = run(engine, t, t + MINUTE, 10 * SECOND, () => [[path, 9]]);
+    assert.ok(detectors(engine).includes(`newState:${path}`), detectors(engine).join(', '));
+  });
+});
+
+describe('watch learning: null is "no value"', () => {
+  it('does not report a sensor that briefly sends null as changing to a new state', () => {
+    const engine = newEngine();
+    const rand = noise(6);
+    const paths = ['environment.inside.bedroom.rssi', 'electrical.solar.main.yieldTotal', 'electrical.solar.main.load'];
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [
+      [paths[0], Math.round(-70 + 3 * rand())],
+      [paths[1], 1378296000],
+      [paths[2], 'on']
+    ]);
+    // A charger reconnecting sends null for everything once.
+    t = run(engine, t, t + 10 * SECOND, 10 * SECOND, () => paths.map((path) => [path, null]));
+    t = run(engine, t, t + 5 * MINUTE, 10 * SECOND, () => [
+      [paths[0], Math.round(-70 + 3 * rand())],
+      [paths[1], 1378296000],
+      [paths[2], 'on']
+    ]);
+    assert.deepEqual(opened(engine, 'newState'), []);
+    assert.deepEqual(detectors(engine), []);
+  });
+
+  it('reports a sensor that keeps sending null as having no value, and clears when it reads again', () => {
+    const engine = newEngine();
+    const path = 'environment.inside.bedroom.temperature';
+    const rand = noise(8);
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [[path, 293 + 0.2 * rand()]]);
+    t = run(engine, t, t + 5 * MINUTE, 10 * SECOND, () => [[path, null]]);
+    const finding = engine.status().activeFindings.find((item) => item.detector === 'dropout');
+    assert.ok(finding, detectors(engine).join(', '));
+    assert.match(finding.title, /has no value/);
+    assert.match(finding.message, /null/);
+    run(engine, t, t + MINUTE, 10 * SECOND, () => [[path, 293 + 0.2 * rand()]]);
+    assert.ok(!detectors(engine).includes(`dropout:${path}`));
+  });
+
+  it('forgets null as a state from a save made before', () => {
+    const state = monitor.importPathState(
+      { path: 'electrical.solar.main.load', kind: 'discrete', n: 500, seen: { on: 499, null: 1 }, lastValue: 'null' },
+      T0
+    );
+    assert.deepEqual(state.seen, { on: 499 });
+    assert.equal(state.lastValue, undefined);
+  });
+});
+
+describe('watch learning: day and night for everything solar', () => {
+  const position = { latitude: 60.28, longitude: 25.0 };
+  const panel = 'electrical.solar.main.panelVoltage';
+  // Open-circuit voltage comes with the first light, well before sunrise,
+  // and is near its full value long before the sun is up.
+  const voltage = (t, rand) => {
+    const elevation = sunElevationDeg(position.latitude, position.longitude, t);
+    if (elevation < -6) return 0;
+    return 19.5 * Math.min(1, (elevation + 6) / 3) + 0.05 * rand();
+  };
+
+  it('works out the sun from the position: noon, night, and a midsummer night that is barely dark', () => {
+    assert.ok(Math.abs(sunElevationDeg(60.28, 25, Date.parse('2026-11-16T10:20:00Z')) - 10.9) < 0.5);
+    assert.ok(sunElevationDeg(60.28, 25, Date.parse('2026-11-16T22:00:00Z')) < -40);
+    const midsummer = sunElevationDeg(60.28, 25, Date.parse('2026-06-21T22:00:00Z'));
+    assert.ok(midsummer > -7 && midsummer < -5, String(midsummer));
+  });
+
+  it('does not report the panels waking at dawn and sleeping at dusk', () => {
+    const start = Date.parse('2026-11-15T16:00:00Z');
+    const engine = newEngine({}, start);
+    const rand = noise(12);
+    const t = run(engine, start, start + 26 * HOUR, 10 * SECOND, (now) => [
+      ['navigation.position', position, 'gps'],
+      [panel, voltage(now, rand)]
+    ]);
+    const labels = engine.status().regimeChanges.map((change) => change.label);
+    assert.ok(labels.includes('Twilight') && labels.includes('Sun up') && labels.includes('Sun down'), labels.join(', '));
+    assert.deepEqual(engine.status().incidents.flatMap((incident) => incident.findings).filter((entry) => entry.path === panel), []);
+    assert.equal(engine.inventory(t).capabilities.find((item) => item.id === 'regimes').available, true);
+  });
+
+  it('still reports panels that go dead in the middle of the day', () => {
+    const start = Date.parse('2026-11-16T07:00:00Z');
+    const engine = newEngine({}, start);
+    const rand = noise(13);
+    let t = run(engine, start, Date.parse('2026-11-16T10:00:00Z'), 10 * SECOND, (now) => [
+      ['navigation.position', position, 'gps'],
+      [panel, voltage(now, rand)]
+    ]);
+    t = run(engine, t, t + 2 * MINUTE, 10 * SECOND, () => [['navigation.position', position, 'gps'], [panel, 0.4]]);
+    assert.ok(detectors(engine).includes(`shift:${panel}`), detectors(engine).join(', '));
+  });
+});
+
+describe('watch learning: across a restart', () => {
+  it('keeps the habits and the runs it learned', () => {
+    const engine = newEngine();
+    const path = 'environment.inside.cabin.temperature';
+    const rand = noise(3);
+    let t = run(engine, T0, T0 + 40 * MINUTE, 5 * SECOND, () => [[path, 293 + 0.3 * rand()]]);
+    const state = engine.exportState(t).paths.find((item) => item.path === path);
+    habits.follow(state, 'shift+', 9, true, t - 20 * HOUR);
+    habits.follow(state, 'shift+', 0, false, t - 19 * HOUR);
+    const saved = JSON.parse(JSON.stringify({ ...engine.exportState(t), paths: [state] }));
+    const restarted = newEngine();
+    restarted.importState(saved, t);
+    t = run(restarted, t, t + 6 * MINUTE, 5 * SECOND, () => [[path, 293.123]]);
+    const again = restarted.exportState(t).paths.find((item) => item.path === path);
+    assert.equal(again.habits['shift+'].past.length, 1);
+    assert.ok(again.runRecords[''].count >= 30);
+    assert.ok(detectors(restarted).includes(`frozen:${path}`), 'the runs it learned before the restart judge a freeze after it');
+  });
+});

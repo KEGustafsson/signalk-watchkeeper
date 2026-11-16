@@ -1,6 +1,6 @@
 {
   "name": "signalk-watchkeeper",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Signal K plugin that watches every path, learns what is normal for this vessel, and raises notifications when a path departs from it",
   "license": "EUPL-1.2",
   "homepage": "https://github.com/KEGustafsson/signalk-watchkeeper#readme",

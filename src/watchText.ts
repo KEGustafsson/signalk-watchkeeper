@@ -323,6 +323,7 @@ export function sparklinePoints(series: ReadonlyArray<readonly [number, number]>
 export function describeDetectorCounts(byDetector: Readonly<Record<string, number>> | undefined): string {
   const labels: Record<string, string> = {
     shift: 'unusual level',
+    rate: 'counting fast',
     dropout: 'stopped updating',
     frozen: 'stuck sensor',
     newState: 'new state',
