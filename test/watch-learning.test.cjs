@@ -632,3 +632,69 @@ describe('watch learning: a charger as this boat names it, and one that flaps', 
     assert.equal(engine.status().regimeChanges[0].to, 'bulk');
   });
 });
+
+describe('watch learning: review of the first two commits', () => {
+  it('forms a habit of a minute\'s spike every quarter of an hour', () => {
+    const state = monitor.createPathState('networking.edgeLink.boat.packetLoss', T0);
+    let t = T0;
+    for (let index = 0; index < 60; index += 1) {
+      habits.follow(state, 'shift+', 20, true, t);
+      habits.follow(state, 'shift+', 0, false, t + MINUTE);
+      t += 15 * MINUTE;
+    }
+    const usual = habits.usual(state, 'shift+', t);
+    assert.ok(usual, 'fifteen hours of it is a habit');
+    habits.follow(state, 'shift+', 20, true, t);
+    assert.equal(habits.judge(state, 'shift+', 20, t).beyond, false);
+  });
+
+  it('reports a sensor that comes back from an outage stuck on the value it had', () => {
+    const engine = newEngine();
+    const rand = noise(41);
+    const path = 'environment.inside.engineRoom.temperature';
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 310 + 0.3 * rand()]]);
+    t = run(engine, t, t + 2 * SECOND, SECOND, () => [[path, 310.5]]);
+    t = run(engine, t, t + 3 * MINUTE, SECOND, () => []);
+    t = run(engine, t, t + 8 * MINUTE, SECOND, () => [[path, 310.5]]);
+    assert.ok(detectors(engine).includes(`frozen:${path}`), detectors(engine).join(', '));
+  });
+
+  it('judges a value held across an operating change from the change, not never', () => {
+    const engine = newEngine();
+    const rand = noise(42);
+    const rpm = 'propulsion.main.revolutions';
+    const path = 'propulsion.main.oilPressure';
+    let t = run(engine, T0, T0 + 60 * MINUTE, SECOND, () => [[rpm, 30], [path, 300000 + 2000 * rand()]]);
+    t = run(engine, t, t + 2 * SECOND, SECOND, () => [[rpm, 30], [path, 301234]]);
+    // The engine is stopped and started again around the frozen reading.
+    t = run(engine, t, t + 30 * SECOND, SECOND, () => [[rpm, 0], [path, 301234]]);
+    t = run(engine, t, t + 30 * MINUTE, SECOND, () => [[rpm, 30], [path, 301234]]);
+    assert.ok(detectors(engine).includes(`frozen:${path}`), detectors(engine).join(', '));
+  });
+
+  it('follows one receiver for day and night, not a faulty second one', () => {
+    const start = Date.parse('2026-11-16T10:00:00Z');
+    const engine = newEngine({}, start);
+    const home = { latitude: 60.28, longitude: 25.0 };
+    // A second receiver that places the boat on the far side of the world.
+    const away = { latitude: 60.28, longitude: -155.0 };
+    run(engine, start, start + 2 * HOUR, 10 * SECOND, () => [
+      ['navigation.position', home, 'gps1'],
+      ['navigation.position', away, 'gps2']
+    ]);
+    const changes = engine.status().regimeChanges.filter((change) => change.path === 'watchkeeper.daylight');
+    assert.deepEqual(changes, [], 'it stays day at home');
+  });
+
+  it('reports a counter that counts after a week of not counting at all', () => {
+    // Listed, so it is a counter before it has ever moved.
+    const path = 'plugins.example.pumpCount';
+    const engine = newEngine({ watchCounterPaths: [path] });
+    let value = 12;
+    let t = run(engine, T0, T0 + 26 * HOUR, MINUTE, () => [[path, value]]);
+    t = run(engine, t, t + 15 * MINUTE, 10 * SECOND, () => [[path, (value += 1)]]);
+    const finding = engine.status().activeFindings.find((item) => item.detector === 'rate');
+    assert.ok(finding, detectors(engine).join(', '));
+    assert.match(finding.message, /after not counting at all in the past week/);
+  });
+});
