@@ -1689,7 +1689,7 @@ describe('review of 76b201d: outages while raised, feeds held for a slow path, c
     assert.equal(incidents[0].status, 'active');
     // Named by what is happening now, not by the feed that cleared (review
     // of 5294dcc); the feed is still one of its findings.
-    assert.match(incidents[0].title, /^Electrical fast\d+ voltage stopped updating \(\+12 related\)$/);
+    assert.match(incidents[0].title, /^Fast\d+ voltage stopped updating \(\+12 related\)$/);
     assert.ok(incidents[0].findings.some((entry) => entry.detector === 'feed'));
   });
 

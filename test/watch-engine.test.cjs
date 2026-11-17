@@ -57,9 +57,12 @@ describe('watch engine: continuous values', () => {
     assert.equal(findings.length, 1);
     assert.equal(findings[0].detector, 'shift');
     assert.equal(findings[0].severity, 'alert');
-    assert.match(findings[0].title, /Main engine temperature unusually high/);
-    assert.match(findings[0].message, /°C/);
-    assert.match(findings[0].message, /usual 80\.\d °C/);
+    assert.match(findings[0].title, /Main engine temperature higher than usual/);
+    assert.match(findings[0].message, /^9\d °C, usually 80 °C – (?:clearly|far) outside its normal range/);
+    // The exact figures stay with the finding, for the tooltip and the API.
+    assert.match(findings[0].detail, /usual 80\.\d °C \(\d+\.\d× its normal variation\)/);
+    assert.equal(findings[0].name, 'Main engine temperature');
+    assert.equal(findings[0].system, 'main engine');
 
     const notification = engine.notificationStates().get(path);
     assert.equal(notification.state, 'alert');
@@ -367,7 +370,9 @@ describe('watch engine: discrete values', () => {
     run(engine, t, t + 5 * SECOND, SECOND, () => [['electrical.inverters.main.inverterMode', 'fault']]);
     const finding = engine.status().activeFindings[0];
     assert.equal(finding.detector, 'newState');
-    assert.match(finding.title, /changed to "fault"/);
+    assert.match(finding.title, /now reads "fault"/);
+    assert.match(finding.message, /^Before only /);
+    assert.match(finding.detail, /not taken before \(seen before: /);
   });
 
   it('reports a pump cycling far more often than it normally does', () => {
@@ -501,7 +506,7 @@ describe('watch engine: incidents', () => {
       vessel.findings.map((finding) => finding.path),
       ['electrical.batteries.house.voltage', 'propulsion.main.temperature']
     );
-    assert.equal(vessel.title, 'House battery voltage unusually low (+1 related)');
+    assert.equal(vessel.title, 'House battery voltage lower than usual (+1 related)');
     assert.ok(gnss.findings.every((finding) => finding.detector.startsWith('gnss.')));
   });
 
@@ -679,7 +684,8 @@ describe('watch engine: operating states', () => {
     assert.ok(change.restored >= 1, 'the running baseline should be restored');
     const shift = engine.status().activeFindings.find((finding) => finding.path === temp);
     assert.ok(shift, 'expected the hot restart to be reported once it settled');
-    assert.match(shift.message, /usual (?:79\.9|80\.\d) °C/);
+    assert.match(shift.detail, /usual (?:79\.9|80\.\d) °C/);
+    assert.match(shift.message, /usually 80 °C/);
   });
 
   it('ranks what is most unusual right now, below any alarm threshold', () => {
@@ -1971,5 +1977,32 @@ describe('incidents: what is still open names and rates them, and nothing chains
       assert.equal(kept.findings.length, 9);
       assert.notEqual(incidentWith(restored, 'r-nano-sd').id, kept.id);
     }
+  });
+
+  it('marks a finding a restart closed, when another in its incident came back after it', () => {
+    const before = [
+      { id: 'r-alternator', path: 'electrical.alternators.main.voltage', severity: 'warn', on: [[0, OPEN]] },
+      { id: 'r-engine-temp', path: 'propulsion.main.temperature', severity: 'warn', on: [[0, OPEN]] }
+    ];
+    // After the restart only the alternator reports, and recovers at minute 40;
+    // the engine sensor never comes back.
+    const after = [{ id: 'r-alternator', path: 'electrical.alternators.main.voltage', severity: 'warn', on: [[0, 40]] }];
+    const make = (now) => {
+      const engine = createWatchEngine(normalizeWatchConfig({ watchEnabled: true, watchLearningMinutes: 20, watchExcludePaths: ['electrical', 'propulsion'] }), { now });
+      engine.setRules(before.map((item) => ({ id: item.id, path: item.path, op: 'above', value: 0.5, forSeconds: 0, severity: item.severity, source: 'manual' })));
+      return engine;
+    };
+    const engine = make(T);
+    play(engine, before, 0, 10);
+    const restored = make(T + 12 * MINUTE);
+    assert.equal(restored.importState(JSON.parse(JSON.stringify(engine.exportState(T + 10 * MINUTE))), T + 12 * MINUTE), true);
+    play(restored, after, 12, 60);
+    const incident = incidentWith(restored, 'r-alternator');
+    assert.equal(incidentWith(restored, 'r-engine-temp').id, incident.id);
+    assert.equal(incident.status, 'resolved');
+    assert.notEqual(incident.interrupted, true, 'the alternator was seen to recover');
+    const entry = (id) => incident.findings.find((item) => item.key === `rule:${id}`);
+    assert.equal(entry('r-engine-temp').closedByRestart, true);
+    assert.notEqual(entry('r-alternator').closedByRestart, true);
   });
 });
