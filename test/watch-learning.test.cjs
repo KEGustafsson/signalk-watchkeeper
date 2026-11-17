@@ -1558,6 +1558,18 @@ describe('watch learning: a path\'s own settling after restarts', () => {
     tick(over, t + 15 * SECOND, 10);
     assert.equal(over.startupSettledAt, t + 5 * SECOND);
     assert.ok(habits.isOpen(over, 'shift+'), 'followed as one of its own departures');
+    // Over, and the start-up's last tick held (a reset not yet confirmed):
+    // still over, not hovering.
+    const held = learned();
+    held.startupUntil = t + 15 * SECOND;
+    tick(held, t, 10);
+    tick(held, t + 5 * SECOND, 0);
+    held.resetCandidate = { at: t + 10 * SECOND, counting: false };
+    tick(held, t + 10 * SECOND, 0);
+    held.resetCandidate = undefined;
+    tick(held, t + 15 * SECOND, 10);
+    assert.equal(held.startupSettledAt, t + 5 * SECOND);
+    assert.ok(habits.isOpen(held, 'shift+'), 'followed as one of its own departures');
   });
 
   it('does not take a new departure just after the start-up for the restart\'s, ended a minute before', () => {
