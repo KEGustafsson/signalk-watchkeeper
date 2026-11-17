@@ -985,6 +985,23 @@ describe('watch learning: a transponder that rounds its own position', () => {
     assert.ok(jumps.length > 0, 'a\'s jump is reported');
   });
 
+  it('reports a jump whose next fix stays put after the wait, whichever comes first, the fix or the tick', () => {
+    const gnss = require('../lib/watch/gnss.cjs');
+    const options = { gnssJumpMinMetres: 100, gnssMaxSpeedKn: 40, eventHoldMs: 10 * MINUTE };
+    for (const tickFirst of [false, true]) {
+      const state = gnss.createGnssState();
+      gnss.observeGnss(state, 'navigation.position', { latitude: 0, longitude: 0 }, T0, 'gps', options);
+      gnss.observeGnss(state, 'navigation.position', { latitude: 0.001, longitude: 0 }, T0 + SECOND, 'gps', options);
+      // The next fix, 6.1 s on, repeats the jumped position: from the first
+      // fix that is "only" 35 kn, but the vessel did not come back.
+      const at = T0 + 7100;
+      if (tickFirst) gnss.evaluateGnss(state, at, options);
+      gnss.observeGnss(state, 'navigation.position', { latitude: 0.001, longitude: 0 }, at, 'gps', options);
+      const indicators = gnss.evaluateGnss(state, at + SECOND, options);
+      assert.equal(indicators.jump && indicators.jump.active, true, tickFirst ? 'tick first' : 'fix first');
+    }
+  });
+
   it('holds a jump confirmed late from when it was confirmed', () => {
     const gnss = require('../lib/watch/gnss.cjs');
     const options = { gnssJumpMinMetres: 100, gnssMaxSpeedKn: 40, eventHoldMs: 10 * MINUTE };
