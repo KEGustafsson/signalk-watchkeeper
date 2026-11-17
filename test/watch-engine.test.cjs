@@ -1978,4 +1978,31 @@ describe('incidents: what is still open names and rates them, and nothing chains
       assert.notEqual(incidentWith(restored, 'r-nano-sd').id, kept.id);
     }
   });
+
+  it('marks a finding a restart closed, when another in its incident came back after it', () => {
+    const before = [
+      { id: 'r-alternator', path: 'electrical.alternators.main.voltage', severity: 'warn', on: [[0, OPEN]] },
+      { id: 'r-engine-temp', path: 'propulsion.main.temperature', severity: 'warn', on: [[0, OPEN]] }
+    ];
+    // After the restart only the alternator reports, and recovers at minute 40;
+    // the engine sensor never comes back.
+    const after = [{ id: 'r-alternator', path: 'electrical.alternators.main.voltage', severity: 'warn', on: [[0, 40]] }];
+    const make = (now) => {
+      const engine = createWatchEngine(normalizeWatchConfig({ watchEnabled: true, watchLearningMinutes: 20, watchExcludePaths: ['electrical', 'propulsion'] }), { now });
+      engine.setRules(before.map((item) => ({ id: item.id, path: item.path, op: 'above', value: 0.5, forSeconds: 0, severity: item.severity, source: 'manual' })));
+      return engine;
+    };
+    const engine = make(T);
+    play(engine, before, 0, 10);
+    const restored = make(T + 12 * MINUTE);
+    assert.equal(restored.importState(JSON.parse(JSON.stringify(engine.exportState(T + 10 * MINUTE))), T + 12 * MINUTE), true);
+    play(restored, after, 12, 60);
+    const incident = incidentWith(restored, 'r-alternator');
+    assert.equal(incidentWith(restored, 'r-engine-temp').id, incident.id);
+    assert.equal(incident.status, 'resolved');
+    assert.notEqual(incident.interrupted, true, 'the alternator was seen to recover');
+    const entry = (id) => incident.findings.find((item) => item.key === `rule:${id}`);
+    assert.equal(entry('r-engine-temp').closedByRestart, true);
+    assert.notEqual(entry('r-alternator').closedByRestart, true);
+  });
 });

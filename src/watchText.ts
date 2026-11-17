@@ -30,6 +30,8 @@ export interface WatchFinding {
   readonly part?: string;
   /** Since when a dropout has been without data (the finding can open later, after a restart). */
   readonly since?: number;
+  /** Closed by a plugin restart while still open (it did not come back after it), not seen to recover. */
+  readonly closedByRestart?: boolean;
 }
 
 export interface WatchIncident {
@@ -391,10 +393,7 @@ function nameOf(finding: WatchFinding): string {
   return finding.name ?? finding.path;
 }
 
-/** A finding as an incident's view holds it: marked when a restart, not recovery, closed it. */
-type ViewFinding = WatchFinding & { readonly closedByRestart?: boolean };
-
-function singleLine(finding: ViewFinding, active: boolean): IncidentLine {
+function singleLine(finding: WatchFinding, active: boolean): IncidentLine {
   const open = finding.clearedAt === undefined;
   return {
     key: `${finding.key}-${finding.openedAt}`,
@@ -477,27 +476,33 @@ export function incidentView(incident: WatchIncident): IncidentView {
     (a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] || a.openedAt - b.openedAt
   );
   const closedAt = incident.resolvedAt ?? incident.updatedAt;
-  // A restart that closed the incident closed its open findings at the
-  // restart, as they were never seen to clear: they are not "back to normal".
+  // A restart closes the findings that do not come back after it: they were
+  // never seen to clear, so they are not "back to normal". The engine marks
+  // each one; an incident a restart closed, saved before it did, has its
+  // findings closed at the restart.
   const interrupted = !active && incident.interrupted === true;
   const earlier = linesOf(
     incident.findings
       .filter((finding) => !isOpen(finding))
-      .map((finding): ViewFinding => {
+      .map((finding): WatchFinding => {
         const clearedAt = finding.clearedAt ?? closedAt;
-        return interrupted && clearedAt === closedAt ? { ...finding, clearedAt, closedByRestart: true } : { ...finding, clearedAt };
+        const closedByRestart = finding.closedByRestart === true || (interrupted && clearedAt === closedAt);
+        return { ...finding, clearedAt, closedByRestart };
       }),
     false
   );
+  const restarted = earlier.some((line) => line.closedByRestart);
   return {
     headline: active
       ? incident.title
       : interrupted
         ? `Closed by a plugin restart at ${formatClockTime(closedAt)}`
-        : `All back to normal at ${formatClockTime(closedAt)}`,
+        : restarted
+          ? `Over at ${formatClockTime(closedAt)}; a plugin restart closed part of it`
+          : `All back to normal at ${formatClockTime(closedAt)}`,
     open,
     earlier,
-    earlierHeading: earlier.some((line) => line.closedByRestart) ? 'Earlier' : 'Earlier – all back to normal',
+    earlierHeading: restarted ? 'Earlier' : 'Earlier – all back to normal',
     earlierShown: earlier.length > EARLIER_COLLAPSED + 1 ? EARLIER_COLLAPSED : earlier.length,
     omitted: omittedText(incident)
   };

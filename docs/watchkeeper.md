@@ -561,7 +561,10 @@ Earlier – all back to normal
   reads *All back to normal at HH:MM*. An incident a plugin restart closed
   before its findings were seen to clear reads *Closed by a plugin restart at
   HH:MM* instead: those findings say *Still open when the plugin restarted at
-  HH:MM*, not *Normal again*, and their section is headed just *Earlier*.
+  HH:MM*, not *Normal again*, and their section is headed just *Earlier*. A
+  finding that did not come back after a restart while others in its incident
+  did is marked `closedByRestart` and reads the same; once that incident is
+  over it reads *Over at HH:MM; a plugin restart closed part of it*.
 - Open findings come first, the most severe first, each with since when and
   for how long; cleared ones follow in the order they started, one line each
   with when they were back to normal. More than six earlier lines show the

@@ -288,6 +288,19 @@ describe('incidentText', () => {
     assert.doesNotMatch(text, /All back to normal/);
     assert.match(text, /Main engine temperature higher than usual: .*Still open when the plugin restarted at \d\d:00\.$/m);
     assert.match(text, /Main alternator current lower than usual: .*Normal again at \d\d:05\.$/m);
+    // One finding a restart closed, in an incident that otherwise recovered.
+    const part = incidentView({
+      ...closed,
+      interrupted: false,
+      findings: [
+        { ...closed.findings[0], clearedAt: Date.UTC(2026, 5, 1, 8, 30), closedByRestart: true },
+        { ...closed.findings[1], clearedAt: Date.UTC(2026, 5, 1, 8, 5) }
+      ]
+    });
+    assert.match(part.headline, /^Over at \d\d:00; a plugin restart closed part of it$/);
+    assert.equal(part.earlierHeading, 'Earlier');
+    assert.match(earlierLineText(part.earlier[0]), /Still open when the plugin restarted at \d\d:30\.$/);
+    assert.match(earlierLineText(part.earlier[1]), /Normal again at \d\d:05\.$/);
     // Resolved on its own: back to normal, as before.
     const recovered = incidentView({ ...closed, interrupted: false });
     assert.match(recovered.headline, /^All back to normal at /);
