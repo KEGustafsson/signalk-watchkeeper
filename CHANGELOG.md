@@ -5,6 +5,57 @@ All notable changes to `signalk-watchkeeper` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project uses [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+Incidents read the way an owner would say them. On a real incident of 18
+findings over a day the panel showed every finding in the order it started,
+in the detectors' words ("Electrical victron dcdc voltage in unusually low —
+13.30 V, −0.54 V from its usual 13.84 V (10.8× its normal variation)"), with
+the three that still needed attention at the bottom; the copied text was cut
+off before reaching them.
+
+### Changed
+
+- **The panel puts what needs attention first.** An incident shows *Needs
+  attention now* - its open findings, the most severe first, each with since
+  when and for how long - then *Earlier – all back to normal*, one short line
+  each with the time it started and when it was normal again. More than six
+  earlier lines show five and *Show all*. **Trend**, **Mute 1 h** and **Not
+  useful** are only on open findings. The headline is the incident's title as
+  the engine sets it, or *All back to normal at HH:MM* once it has resolved;
+  recent incidents open to the same view.
+- **Findings that started together share a line.** State switching on
+  several systems in the same minute reads *Several systems switched state at
+  once (under-keel, remote controller, vision, heading hold)*; no data from
+  several readings of one sensor reads *Under-keel sensor sending no data –
+  Clearance and escape heading are empty*. Each finding is a click away.
+- **Plain wording** in the panel, the copied incident and the Signal K
+  notifications: *Victron DC-DC input voltage lower than usual: 13.3 V,
+  usually 13.8 V – far outside its normal range*; *Nano memory use higher than
+  usual: 87 %, usually 72 %*; *Under-keel clearance sending no data*; *Under-keel
+  state now reads "unknown": Before only "alarm" or "off"*; *4 switches in the
+  last hour, normally under 1 an hour*. How far out a level is is said in
+  words (a little, clearly, far) instead of "N× its normal variation", and a
+  rate of change only while the reading is still moving away from normal.
+- **Numbers rounded to what matters**: at most two decimals, voltages in
+  tenths, temperatures whole or in tenths, and a ratio - Signal K units
+  `ratio`, or a `…Utilisation`, `…Ratio` or `…Fraction` leaf whose values are
+  all 0..1 - as a percentage, with a decimal more wherever rounding would
+  make two different numbers read the same.
+- **Names.** Without a `meta.displayName`, a path's name drops the Signal K
+  branch in front of it when two words are left (*Speed over ground*), spells
+  out abbreviations whose meaning is not in doubt (DC-DC, CPU, SD card, GNSS,
+  frames/s, AC, DC, NMEA, AIS, GPS, …), reads a trailing `in`/`out` after a
+  quantity as input/output (*Victron DC-DC input voltage*), and says a
+  repeated word once (*Main inverter mode*). Unknown tokens stay as they are.
+- **Copy as text** gives the panel's lines under the same two headings.
+
+### Added
+
+- Each finding carries `detail`, the exact figures it was measured as (shown
+  as the panel's tooltip and under its trend), and `name`, `system`, `part`,
+  `kind`, `brief` and, for a dropout, `since` (when the data stopped).
+
 ## [0.2.0]
 
 The watch now learns from each path's own history, beyond its baseline. On a

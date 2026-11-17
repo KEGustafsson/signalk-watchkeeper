@@ -1,8 +1,10 @@
 import React from 'react';
 import {
   createLatestGate,
+  earlierLineText,
   incidentText,
-  omittedText,
+  incidentView,
+  sinceText,
   reportText,
   unusualText,
   describeCompileEvidence,
@@ -14,7 +16,7 @@ import {
   storedRule
 } from './watchText.js';
 import { COPIED_MS, copyText } from './clipboard.js';
-import type { WatchIncident, WatchInventory, WatchReplayResult, WatchReport, WatchRuleCompileResult, WatchStatus, WatchUnusualRow } from './watchText.js';
+import type { IncidentLine, WatchFinding, WatchIncident, WatchInventory, WatchReplayResult, WatchReport, WatchRuleCompileResult, WatchStatus, WatchUnusualRow } from './watchText.js';
 
 interface WatchPanelProps {
   readonly fetchImpl?: typeof fetch;
@@ -83,6 +85,8 @@ export default function WatchPanel(props: WatchPanelProps) {
   const [trends, setTrends] = React.useState<Record<string, Series | 'loading' | 'none'>>({});
   const [replay, setReplay] = React.useState<WatchReplayResult | 'running' | null>(null);
   const [showResolved, setShowResolved] = React.useState<boolean>(false);
+  // Incidents whose earlier, back-to-normal lines are all shown.
+  const [showAllEarlier, setShowAllEarlier] = React.useState<Record<string, boolean>>({});
   const [refresh, setRefresh] = React.useState<number>(0);
   const [now, setNow] = React.useState<number>(Date.now());
   const [updatedAt, setUpdatedAt] = React.useState<number | null>(null);
@@ -413,8 +417,123 @@ export default function WatchPanel(props: WatchPanelProps) {
   const activeIncidents = incidents.filter((incident) => incident.status === 'active');
   const resolvedIncidents = incidents.filter((incident) => incident.status === 'resolved').slice(0, 10);
 
+  const renderActions = (finding: WatchFinding) => {
+    const trend = trends[finding.path];
+    const canTrend = !finding.detector.startsWith('gnss.') && finding.detector !== 'feed';
+    return (
+      <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', flexWrap: 'wrap' }}>
+        {canTrend ? (
+          <button type="button" style={buttonStyle} onClick={() => onTrend(finding.path)}>
+            {trend && trend !== 'none' ? 'Hide trend' : 'Trend'}
+          </button>
+        ) : null}
+        {finding.detector !== 'feed' ? (
+          <button type="button" style={buttonStyle} onClick={() => onMute(finding.path, 60)}>
+            Mute 1 h
+          </button>
+        ) : null}
+        {finding.detector !== 'feed' && finding.detector !== 'rule' ? (
+          <button
+            type="button"
+            style={buttonStyle}
+            title="Make this path need a bigger change before it is reported again. Wears off over a few weeks."
+            onClick={() => onFeedback(finding.path, false)}
+          >
+            Not useful
+          </button>
+        ) : null}
+      </div>
+    );
+  };
+
+  // The trend of an open finding, with the exact figures it was measured as.
+  const renderTrend = (finding: WatchFinding, color: string) => {
+    const trend = trends[finding.path];
+    return (
+      <>
+        {trend === 'loading' ? <p style={{ margin: '0.3rem 0 0 0', color: '#475569' }}>Loading trend…</p> : null}
+        {trend === 'none' ? <p style={{ margin: '0.3rem 0 0 0', color: '#475569' }}>No trend recorded yet.</p> : null}
+        {Array.isArray(trend) ? (
+          <>
+            <svg
+              role="img"
+              aria-label={`Trend of ${finding.path} over the last ${Math.round((trend[trend.length - 1][0] - trend[0][0]) / 60000)} minutes`}
+              width="100%"
+              height="40"
+              viewBox="0 0 240 40"
+              preserveAspectRatio="none"
+              style={{ display: 'block', marginTop: '0.3rem', background: '#ffffff', borderRadius: '4px', border: '1px solid #e2e8f0' }}
+            >
+              <polyline fill="none" stroke={color} strokeWidth="1.5" points={sparklinePoints(trend, 240, 36)} transform="translate(0,2)" />
+            </svg>
+            <p style={{ margin: '0.2rem 0 0 0', fontSize: '0.8rem', color: '#475569', overflowWrap: 'anywhere' }}>
+              <code>{finding.path}</code>
+              {finding.detail ? ` · ${finding.detail}` : ''}
+            </p>
+          </>
+        ) : null}
+      </>
+    );
+  };
+
+  const mutedText = { fontSize: '0.8rem', color: '#475569' } as const;
+  const sectionHeading = { margin: '0.5rem 0 0.2rem 0', fontSize: '0.85rem', fontWeight: 700, color: '#334155' } as const;
+
+  // An open line: what it is, since when, and the buttons on each open finding.
+  const renderOpenLine = (line: IncidentLine, color: string) => (
+    <li key={line.key} title={line.detail} style={{ color: '#0f172a' }}>
+      <span aria-hidden="true" style={{ color }}>
+        ⚠{' '}
+      </span>
+      <span style={{ fontWeight: 600 }}>{line.title}</span>
+      <span style={mutedText}> – since {sinceText(line, now)}</span>
+      <br />
+      <span style={{ overflowWrap: 'anywhere' }}>{line.message}</span>
+      {line.actions ? renderActions(line.findings[0]) : null}
+      {line.actions ? renderTrend(line.findings[0], color) : null}
+      {line.members.length > 0 ? (
+        <details style={{ marginTop: '0.3rem' }}>
+          <summary style={{ ...mutedText, cursor: 'pointer' }}>Each of the {line.members.length}: trend, mute or not useful</summary>
+          <ul style={{ margin: '0.2rem 0 0 0', paddingLeft: '1.1rem', display: 'grid', gap: '0.3rem' }}>
+            {line.members.map((member) => (
+              <li key={member.key} title={member.detail}>
+                <span style={{ fontWeight: 600 }}>{member.title}</span>
+                {member.actions ? renderActions(member.findings[0]) : null}
+                {member.actions ? renderTrend(member.findings[0], color) : null}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </li>
+  );
+
+  // A line that is back to normal: one short sentence, no buttons.
+  const renderEarlierLine = (line: IncidentLine) => (
+    <li key={line.key} title={line.detail} style={{ color: '#475569' }}>
+      <span style={{ overflowWrap: 'anywhere' }}>{earlierLineText(line)}</span>
+      {line.members.length > 0 ? (
+        <details style={{ marginTop: '0.2rem' }}>
+          <summary style={{ ...mutedText, cursor: 'pointer' }}>Each of the {line.members.length}</summary>
+          <ul style={{ margin: '0.2rem 0 0 0', paddingLeft: '1.1rem' }}>
+            {line.members.map((member) => (
+              <li key={member.key} title={member.detail}>
+                {earlierLineText(member)}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </li>
+  );
+
   const renderIncident = (incident: WatchIncident) => {
+    // Colour and headline are the engine's severity and title; the view only
+    // orders and merges the findings under them.
     const style = SEVERITY_STYLE[incident.severity] ?? SEVERITY_STYLE.warn;
+    const view = incidentView(incident);
+    const showAll = showAllEarlier[incident.id] === true;
+    const earlier = showAll ? view.earlier : view.earlier.slice(0, view.earlierShown);
     return (
       <article
         key={incident.id}
@@ -422,80 +541,44 @@ export default function WatchPanel(props: WatchPanelProps) {
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
           <strong style={{ color: style.color }}>
-            {style.label}: {incident.title}
+            {incident.status === 'active' ? `${style.label}: ` : ''}
+            {view.headline}
           </strong>
-          <span style={{ fontSize: '0.8rem', color: '#475569' }}>
-            {formatClockTime(incident.openedAt)} · {formatAgo(incident.openedAt, now)}
+          <span style={mutedText}>
+            started {formatClockTime(incident.openedAt)} · {formatAgo(incident.openedAt, now)}
           </span>
         </div>
-        {omittedText(incident) ? (
-          <p style={{ margin: '0.3rem 0 0 0', fontSize: '0.8rem', color: '#475569' }}>{omittedText(incident)}, to keep the incident short.</p>
+        {view.open.length > 0 ? (
+          <>
+            <h4 style={sectionHeading}>Needs attention now</h4>
+            <ul style={{ margin: 0, paddingLeft: '0.2rem', listStyle: 'none', display: 'grid', gap: '0.45rem' }}>
+              {view.open.map((line) => renderOpenLine(line, style.color))}
+            </ul>
+          </>
         ) : null}
-        <ol style={{ margin: '0.4rem 0 0 0', paddingLeft: '1.2rem', display: 'grid', gap: '0.35rem' }}>
-          {incident.findings.map((finding, index) => {
-            const trend = trends[finding.path];
-            const canTrend = !finding.detector.startsWith('gnss.') && finding.detector !== 'feed';
-            return (
-              <li key={`${finding.key}-${finding.openedAt}`} style={{ color: finding.clearedAt === undefined ? '#0f172a' : '#64748b' }}>
-                <span style={{ fontWeight: 600 }}>{finding.title}</span>
-                {index === 0 && incident.findings.length > 1 ? (
-                  <span style={{ fontSize: '0.8rem', color: '#475569' }}> (first sign)</span>
-                ) : null}
-                {finding.clearedAt !== undefined ? (
-                  <span style={{ fontSize: '0.8rem' }}> (cleared {formatClockTime(finding.clearedAt)})</span>
-                ) : null}
-                <br />
-                <span style={{ overflowWrap: 'anywhere' }}>{finding.message}</span>
-                {incident.status === 'active' && finding.clearedAt === undefined ? (
-                  <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', flexWrap: 'wrap' }}>
-                    {canTrend ? (
-                      <button type="button" style={buttonStyle} onClick={() => onTrend(finding.path)}>
-                        {trend && trend !== 'none' ? 'Hide trend' : 'Trend'}
-                      </button>
-                    ) : null}
-                    {finding.detector !== 'feed' ? (
-                      <button type="button" style={buttonStyle} onClick={() => onMute(finding.path, 60)}>
-                        Mute 1 h
-                      </button>
-                    ) : null}
-                    {finding.detector !== 'feed' && finding.detector !== 'rule' ? (
-                      <button
-                        type="button"
-                        style={buttonStyle}
-                        title="Make this path need a bigger change before it is reported again. Wears off over a few weeks."
-                        onClick={() => onFeedback(finding.path, false)}
-                      >
-                        Not useful
-                      </button>
-                    ) : null}
-                  </div>
-                ) : null}
-                {trend === 'loading' ? <p style={{ margin: '0.3rem 0 0 0', color: '#475569' }}>Loading trend…</p> : null}
-                {trend === 'none' ? <p style={{ margin: '0.3rem 0 0 0', color: '#475569' }}>No trend recorded yet.</p> : null}
-                {Array.isArray(trend) ? (
-                  <svg
-                    role="img"
-                    aria-label={`Trend of ${finding.path} over the last ${Math.round((trend[trend.length - 1][0] - trend[0][0]) / 60000)} minutes`}
-                    width="100%"
-                    height="40"
-                    viewBox="0 0 240 40"
-                    preserveAspectRatio="none"
-                    style={{ display: 'block', marginTop: '0.3rem', background: '#ffffff', borderRadius: '4px', border: '1px solid #e2e8f0' }}
-                  >
-                    <polyline fill="none" stroke={style.color} strokeWidth="1.5" points={sparklinePoints(trend, 240, 36)} transform="translate(0,2)" />
-                  </svg>
-                ) : null}
-              </li>
-            );
-          })}
-        </ol>
+        {view.earlier.length > 0 || view.omitted ? (
+          <>
+            <h4 style={sectionHeading}>Earlier – all back to normal</h4>
+            {view.omitted ? <p style={{ ...mutedText, margin: 0 }}>{view.omitted}, to keep the incident short.</p> : null}
+            <ul style={{ margin: 0, paddingLeft: '1.1rem', display: 'grid', gap: '0.2rem', fontSize: '0.9rem' }}>{earlier.map(renderEarlierLine)}</ul>
+            {view.earlier.length > view.earlierShown ? (
+              <button
+                type="button"
+                style={{ ...buttonStyle, marginTop: '0.3rem', padding: '0.15rem 0.5rem', fontSize: '0.8rem' }}
+                onClick={() => setShowAllEarlier((previous) => ({ ...previous, [incident.id]: !showAll }))}
+              >
+                {showAll ? 'Show fewer' : `Show all ${view.earlier.length}`}
+              </button>
+            ) : null}
+          </>
+        ) : null}
         {incident.status === 'active' ? (
           <div style={{ marginTop: '0.5rem' }}>
             <button
               type="button"
               style={buttonStyle}
               title="Copies this incident as plain text, for the log or a message."
-              onClick={() => copyFor(incident.id, incidentText(incident))}
+              onClick={() => copyFor(incident.id, incidentText(incident, now))}
             >
               {copied === incident.id ? 'Copied' : 'Copy as text'}
             </button>
@@ -848,8 +931,13 @@ export default function WatchPanel(props: WatchPanelProps) {
               <ul style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.1rem' }}>
                 {resolvedIncidents.map((incident) => (
                   <li key={incident.id}>
-                    {formatClockTime(incident.openedAt)}–{formatClockTime(incident.resolvedAt)} {incident.title}
-                    {incident.interrupted ? ' (plugin restarted)' : ''}
+                    <details>
+                      <summary style={{ cursor: 'pointer' }}>
+                        {formatClockTime(incident.openedAt)}–{formatClockTime(incident.resolvedAt)} {incident.title}
+                        {incident.interrupted ? ' (plugin restarted)' : ''}
+                      </summary>
+                      <div style={{ marginTop: '0.3rem' }}>{renderIncident(incident)}</div>
+                    </details>
                   </li>
                 ))}
               </ul>
