@@ -270,6 +270,28 @@ describe('incidentText', () => {
     assert.match(text, /\n- …and 2 more$/);
   });
 
+  it('counts findings, not lines, in what was left out', () => {
+    const long = 'T'.repeat(3000);
+    // Two switching findings merged into one line, and three findings the
+    // engine already dropped: all five are left out.
+    const switching = (key: string, system: string): WatchFinding => ({
+      ...incident.findings[0],
+      key,
+      path: `${system}.state`,
+      detector: 'cycling',
+      kind: 'switching',
+      system,
+      title: `${system} switching unusually often`,
+      openedAt: Date.UTC(2026, 5, 1, 8, 0)
+    });
+    const text = incidentText(
+      { ...incident, title: long, omitted: 3, findings: [switching('a', 'Vision'), switching('b', 'Heading hold')] },
+      Date.UTC(2026, 5, 1, 8, 10)
+    );
+    assert.ok(text.length <= 1800, `${text.length} characters`);
+    assert.match(text, /\n- …and 5 more$/);
+  });
+
   it('does not call findings a restart closed back to normal', () => {
     const restartAt = Date.UTC(2026, 5, 1, 9, 0);
     const closed: WatchIncident = {

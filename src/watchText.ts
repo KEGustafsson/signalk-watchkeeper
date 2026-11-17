@@ -557,29 +557,30 @@ export function earlierLineText(line: IncidentLine): string {
  */
 export function incidentText(incident: WatchIncident, now: number = Date.now()): string {
   const view = incidentView(incident);
-  // Every line in order; `counted` ones are findings, which the overflow
-  // notice counts when they do not fit.
-  const lines: { text: string; counted: boolean }[] = [];
+  // Every line in order, with how many findings it stands for: the notice of
+  // what does not fit counts findings, not lines (a merged line is several,
+  // and the line about findings the engine already dropped is that many).
+  const lines: { text: string; findings: number }[] = [];
   if (view.open.length > 0) {
-    lines.push({ text: 'Needs attention now:', counted: false });
-    for (const line of view.open) lines.push({ text: `- ${openLineText(line, now)}`, counted: true });
+    lines.push({ text: 'Needs attention now:', findings: 0 });
+    for (const line of view.open) lines.push({ text: `- ${openLineText(line, now)}`, findings: line.findings.length });
   }
   if (view.earlier.length > 0 || view.omitted) {
-    lines.push({ text: `${view.earlierHeading}:`, counted: false });
+    lines.push({ text: `${view.earlierHeading}:`, findings: 0 });
     // Findings dropped to keep the incident bounded still happened: said
     // first, as they were the earliest.
-    if (view.omitted) lines.push({ text: `- (${view.omitted})`, counted: false });
-    for (const line of view.earlier) lines.push({ text: `- ${earlierLineText(line)}`, counted: true });
+    if (view.omitted) lines.push({ text: `- (${view.omitted})`, findings: Math.max(0, incident.omitted ?? 0) });
+    for (const line of view.earlier) lines.push({ text: `- ${earlierLineText(line)}`, findings: line.findings.length });
   }
   const notice = (count: number) => `- …and ${count} more`;
-  let left = lines.filter((line) => line.counted).length;
+  let left = lines.reduce((sum, line) => sum + line.findings, 0);
   // However long the headline (a long displayName makes a long title), it
   // leaves room for the notice of what does not fit.
   const reserve = left > 0 ? 1 + notice(left).length : 0;
   const out = [`Watchkeeper: ${view.headline}`.slice(0, MAX_TEXT_CHARS - reserve)];
   let used = out[0].length;
   for (const line of lines) {
-    const after = left - (line.counted ? 1 : 0);
+    const after = left - line.findings;
     // Room for this line and its newline, and for the notice after it should
     // anything be left over.
     const needed = 1 + line.text.length + (after > 0 ? 1 + notice(after).length : 0);
