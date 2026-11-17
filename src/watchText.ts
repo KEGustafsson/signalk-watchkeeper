@@ -332,8 +332,10 @@ export interface IncidentLine {
   readonly since: number;
   /** When it was back to normal: the last of its findings to clear. */
   readonly clearedAt?: number;
-  /** Still open when a plugin restart closed its incident: never seen back to normal. */
+  /** Still open when a plugin restart closed it (or, merged, any of it): never seen back to normal. */
   readonly closedByRestart?: boolean;
+  /** When the restart closed it: kept apart from when the rest of a merged line recovered. */
+  readonly restartedAt?: number;
   readonly findings: readonly WatchFinding[];
   /** The single-finding lines it merges; empty for a line of one finding. */
   readonly members: readonly IncidentLine[];
@@ -407,10 +409,17 @@ function singleLine(finding: WatchFinding, active: boolean): IncidentLine {
     since: typeof finding.since === 'number' && Number.isFinite(finding.since) ? Math.min(finding.since, finding.openedAt) : finding.openedAt,
     clearedAt: finding.clearedAt,
     closedByRestart: finding.closedByRestart === true,
+    restartedAt: finding.closedByRestart === true ? finding.clearedAt : undefined,
     findings: [finding],
     members: [],
     actions: active && open
   };
+}
+
+/** The latest of some times, or undefined when there are none. */
+function latest(times: readonly (number | undefined)[]): number | undefined {
+  const known = times.filter((time): time is number => typeof time === 'number' && Number.isFinite(time));
+  return known.length > 0 ? Math.max(...known) : undefined;
 }
 
 function mergedLine(group: readonly WatchFinding[], active: boolean): IncidentLine {
@@ -444,6 +453,7 @@ function mergedLine(group: readonly WatchFinding[], active: boolean): IncidentLi
     since: Math.min(...members.map((member) => member.since)),
     clearedAt: open ? undefined : Math.max(...members.map((member) => member.clearedAt ?? member.openedAt)),
     closedByRestart: members.some((member) => member.closedByRestart),
+    restartedAt: latest(members.filter((member) => member.closedByRestart).map((member) => member.restartedAt)),
     findings: group,
     members,
     actions: false
@@ -526,8 +536,13 @@ export function openLineText(line: IncidentLine, now: number = Date.now()): stri
 
 /** `20:25 Victron DC-DC input voltage lower than usual: 13.3 V, usually 13.8 V. Normal again at 21:11.` */
 export function earlierLineText(line: IncidentLine): string {
+  // The restart's time and the recovery's are kept apart: in a merged line
+  // some can have settled after the restart closed the others.
+  const settled = latest(line.members.filter((member) => !member.closedByRestart).map((member) => member.clearedAt));
   const back = line.closedByRestart
-    ? `Still open when the plugin restarted at ${formatClockTime(line.clearedAt)}.`
+    ? settled !== undefined
+      ? `Settled by ${formatClockTime(settled)}, apart from what was still open when the plugin restarted at ${formatClockTime(line.restartedAt)}.`
+      : `Still open when the plugin restarted at ${formatClockTime(line.restartedAt ?? line.clearedAt)}.`
     : line.members.length > 0
       ? `All settled by ${formatClockTime(line.clearedAt)}.`
       : `Normal again at ${formatClockTime(line.clearedAt)}.`;

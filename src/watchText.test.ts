@@ -301,6 +301,33 @@ describe('incidentText', () => {
     assert.equal(part.earlierHeading, 'Earlier');
     assert.match(earlierLineText(part.earlier[0]), /Still open when the plugin restarted at \d\d:30\.$/);
     assert.match(earlierLineText(part.earlier[1]), /Normal again at \d\d:05\.$/);
+    // Merged: one switching finding closed by the restart at 09:00, another
+    // of the same burst seen to settle at 09:30.
+    const switching = (key: string, system: string, clearedAt: number, closedByRestart?: boolean): WatchFinding => ({
+      ...closed.findings[0],
+      key,
+      path: `${system}.state`,
+      detector: 'cycling',
+      kind: 'switching',
+      system,
+      title: `${system} switching unusually often`,
+      message: '4 switches in the last hour, normally under 1 an hour',
+      brief: undefined,
+      openedAt: Date.UTC(2026, 5, 1, 8, 0),
+      clearedAt,
+      closedByRestart
+    });
+    const burst = incidentView({
+      ...closed,
+      interrupted: false,
+      resolvedAt: Date.UTC(2026, 5, 1, 9, 30),
+      findings: [switching('a', 'Vision', Date.UTC(2026, 5, 1, 9, 0), true), switching('b', 'Heading hold', Date.UTC(2026, 5, 1, 9, 30))]
+    });
+    assert.equal(burst.earlier.length, 1);
+    assert.match(
+      earlierLineText(burst.earlier[0]),
+      /Settled by \d\d:30, apart from what was still open when the plugin restarted at \d\d:00\.$/
+    );
     // Resolved on its own: back to normal, as before.
     const recovered = incidentView({ ...closed, interrupted: false });
     assert.match(recovered.headline, /^All back to normal at /);
