@@ -1020,6 +1020,19 @@ describe('watch learning: a transponder that rounds its own position', () => {
     assert.deepEqual(opened(engine, 'gnss.jump'), []);
   });
 
+  it('learns a receiver\'s slower rate, and waits for its next fix by it', () => {
+    const engine = newEngine();
+    const home = { latitude: 60.28056333333333, longitude: 22.28656 };
+    const off = { latitude: 60.29056333333333, longitude: 22.28656 };
+    // One fix a second, then one every ten seconds for good.
+    let t = run(engine, T0, T0 + 5 * MINUTE, SECOND, () => [['navigation.position', home, 'gps']]);
+    t = run(engine, t, t + 10 * MINUTE, 10 * SECOND, () => [['navigation.position', home, 'gps']]);
+    // One bad fix, and the next one, ten seconds later, is back home.
+    engine.ingest('navigation.position', off, t, 'gps');
+    t = run(engine, t + 10 * SECOND, t + 40 * SECOND, 10 * SECOND, () => [['navigation.position', home, 'gps']]);
+    assert.deepEqual(opened(engine, 'gnss.jump'), []);
+  });
+
   it('holds a jump confirmed late from when it was confirmed', () => {
     const gnss = require('../lib/watch/gnss.cjs');
     const options = { gnssJumpMinMetres: 100, gnssMaxSpeedKn: 40, eventHoldMs: 10 * MINUTE };
