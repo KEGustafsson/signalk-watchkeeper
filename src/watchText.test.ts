@@ -264,6 +264,12 @@ describe('incidentText', () => {
     }
   });
 
+  it('still says how many findings were left out when the title is very long', () => {
+    const text = incidentText({ ...incident, title: 'T'.repeat(3000) }, Date.UTC(2026, 5, 1, 8, 10));
+    assert.ok(text.length <= 1800, `${text.length} characters`);
+    assert.match(text, /\n- …and 2 more$/);
+  });
+
   it('does not call findings a restart closed back to normal', () => {
     const restartAt = Date.UTC(2026, 5, 1, 9, 0);
     const closed: WatchIncident = {

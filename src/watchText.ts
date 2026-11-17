@@ -552,9 +552,12 @@ export function incidentText(incident: WatchIncident, now: number = Date.now()):
     for (const line of view.earlier) lines.push({ text: `- ${earlierLineText(line)}`, counted: true });
   }
   const notice = (count: number) => `- …and ${count} more`;
-  const out = [`Watchkeeper: ${view.headline}`.slice(0, MAX_TEXT_CHARS)];
-  let used = out[0].length;
   let left = lines.filter((line) => line.counted).length;
+  // However long the headline (a long displayName makes a long title), it
+  // leaves room for the notice of what does not fit.
+  const reserve = left > 0 ? 1 + notice(left).length : 0;
+  const out = [`Watchkeeper: ${view.headline}`.slice(0, MAX_TEXT_CHARS - reserve)];
+  let used = out[0].length;
   for (const line of lines) {
     const after = left - (line.counted ? 1 : 0);
     // Room for this line and its newline, and for the notice after it should
