@@ -563,8 +563,9 @@ describe('watch engine: operator controls and persistence', () => {
     // No dropout for the gap the plugin was down...
     restored.tick(later + 5 * SECOND);
     assert.deepEqual(detectors(restored), []);
-    // ...and a jump straight after the restart is reported without relearning.
-    run(restored, later, later + 60 * SECOND, SECOND, () => [[path, 363 + 0.2 * rand()]]);
+    // ...and a jump straight after the restart is reported without relearning,
+    // once start-up has settled (two minutes).
+    run(restored, later, later + 3 * MINUTE, SECOND, () => [[path, 363 + 0.2 * rand()]]);
     assert.ok(detectors(restored).includes(`shift:${path}`));
   });
 });
@@ -1127,7 +1128,7 @@ describe('watch engine: review follow-ups', () => {
     let t = run(engine, T0, T0 + 90 * MINUTE, 10 * SECOND, () => [['plugins.ex.coolantTemperature', 350 + 0.2 * rand()]]);
     const restarted = newEngine({ watchCounterPaths: ['plugins.ex'] });
     restarted.importState(JSON.parse(JSON.stringify(engine.exportState(t))), t);
-    t = run(restarted, t, t + 2 * MINUTE, 10 * SECOND, () => [['plugins.ex.coolantTemperature', 365 + 0.2 * rand()]]);
+    t = run(restarted, t, t + 3 * MINUTE, 10 * SECOND, () => [['plugins.ex.coolantTemperature', 365 + 0.2 * rand()]]);
     assert.ok(detectors(restarted).includes('shift:plugins.ex.coolantTemperature'), detectors(restarted).join(', '));
   });
 

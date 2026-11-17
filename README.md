@@ -25,7 +25,15 @@ receivers do not corroborate.
   cost another learning period.
 - **Operating states.** When an engine starts or a charger changes mode, the
   affected paths re-learn (or restore the baseline they had in that state)
-  instead of alerting.
+  instead of alerting. Day and night are an operating state of everything
+  solar, worked out from the vessel's own position.
+- **Habits.** A path that keeps making the same kind of departure and coming
+  back from it on its own (a radio link's packet loss spiking for a minute
+  several times a day) is reported the first few times, then only when it
+  goes clearly further or lasts clearly longer than usual.
+- **Its own yardsticks.** A sensor is stuck when it holds a value far longer
+  than it ever normally does in that operating state; a counter shows itself
+  by its resets and is watched by how fast it counts.
 - **Incidents.** Related findings are grouped, earliest sign first.
 - **Notifications** go under `notifications.watchkeeper.*`, at `warn` or
   `alert` only - never `alarm` or `emergency`, which belong to real alarm

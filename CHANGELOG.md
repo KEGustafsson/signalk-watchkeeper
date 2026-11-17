@@ -5,6 +5,96 @@ All notable changes to `signalk-watchkeeper` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project uses [semantic versioning](https://semver.org/).
 
+## [0.2.0]
+
+The watch now learns from each path's own history, beyond its baseline. On a
+moored boat's first day the earlier version raised 50 incidents from 128
+findings, nearly all of them the patterns below; in a three-day simulation of
+those patterns, findings fell from 59 to 9 and every real fault in it was
+still reported.
+
+### Added
+
+- **Habits.** A path that keeps making the same kind of departure and coming
+  back from it on its own - a radio link's packet loss spiking for a minute,
+  a solar charger flapping at dusk - is reported the first few times, then
+  only when it goes more than 1.5 times further, or lasts more than twice as
+  long, than it usually did (3 episodes over 6 hours make a habit; 14 days
+  are kept). The finding says what the path usually does, the watch report
+  lists what it has learned to expect, and "useful" makes it forget.
+- **Counting unusually fast** (`rate`). A counter is watched by how fast it
+  counts: four times the fastest 10 minutes of the past week is reported.
+- **Day, twilight and night** as an operating state of `electrical.solar.`,
+  worked out from the vessel's position and the time, with no sun path or
+  other plugin needed. Solar paths re-learn through twilight; the night's
+  baseline is restored each night.
+- **Counters that show themselves by a reset.** A path no name says is a
+  counter, that drops to zero and counts up again from there and never goes
+  down otherwise (a link's sequence number, a modem's byte count), is a
+  counter; so is one reset to a lower value after a long unbroken climb. A
+  climb alone still is not. Byte, packet and retransmission counts,
+  `usage.rx`/`usage.tx` and `sequenceNumber` are recognised by name.
+- **Spells of "no value"** a sensor keeps coming back from become a habit,
+  like the departures above.
+- `…Yesterday` figures are a default exclusion: they change at midnight by
+  design.
+
+- **A restart is not news.** A finding open when the plugin stopped carries
+  on as the same finding, in the same incident, if its condition is back
+  within 20 minutes of a restart (and the save is under 30 minutes old). For
+  the first 2 minutes after start, states that plugins announce again are not
+  counted as switching, a new state must still hold when they are over, an
+  operating state is applied once, as it stands then, and no new finding
+  opens (your own watches excepted) until they are over. A state path's
+  switches are not counted until it is back on its value from before the
+  restart (15 minutes at most), as some plugins take minutes to settle; how
+  long a sensor has had no value is kept across a restart. Habits are not
+  learned from a restart's own departures (a link reconnecting), and an
+  episode a short restart cut in two stays one. A path that has not read
+  again since a restart is not a dropout for its first 15 minutes.
+- **A flapping operating state waits.** A gate that changed more than 4 times
+  in the last hour is applied only once it has held one state for 10 minutes,
+  so a charger hunting between modes does not keep the electrical paths
+  re-learning all day.
+
+### Changed
+
+- The charger, inverter and alternator gates also match the singular names
+  (`electrical.charger.<id>.chargingMode`).
+- **Stuck sensors are judged by how long the path itself holds a value**, per
+  operating state, instead of by how often it changes. A counter that ticks
+  in bursts, or a stopped engine's temperature sitting on one reading for an
+  hour, is no longer stuck; a freeze while the engine runs still is. A hold
+  is judged only against enough of the path's history: six times the limit
+  in learned runs, and a day of them for a limit above 5 minutes.
+- **Measurements are never state codes.** A whole-number signal strength
+  (`rssi`, `rsrp`, `rsrq`, `sinr`, `snr`, dB, dBm), jitter, latency, loss or
+  any path with a measurement's name or unit is continuous, so a new reading
+  is not a "new state". Saved paths decided discrete move with their next
+  sample.
+- **`null` is "no value"**, not a state: a sensor briefly sending null is not
+  reported, and one that keeps sending it is reported as having no value.
+  Saved states forget `null` as one of their values.
+
+### Fixed
+
+- One bad position fix between good ones from the same source (an AIS
+  transponder's own position, rounded, as it starts) is no longer a GNSS
+  jump: a jump waits for the source's next fix, and one that is back where
+  the vessel was is the bad fix, not the vessel.
+- A reading its sender rounds (disk use sent as 0.29, then 0.3) is judged
+  with the rounding step as its noise floor, learned from the decimals it
+  is sent with at its baseline, before a step has been seen three times.
+
+- The noise floor of a path that sits at zero collapsed to 1e-9 once its mean
+  had decayed to a tiny non-zero value after a spike, so rounding noise read
+  as thousands of spreads and kept the finding open. While the mean is within
+  the path's resolution of zero, the resolution is the floor.
+- A counter's reset is no longer reported as a level drop while the next
+  samples show it counting up again (up to 6 hours for a slow count).
+- A counter that was once reset to a value other than zero was taken for a
+  measurement for good; saves learn again whether each path falls.
+
 ## [0.1.0]
 
 First release as its own plugin. Watchkeeper was developed inside
