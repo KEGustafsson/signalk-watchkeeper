@@ -1178,6 +1178,24 @@ describe('watch learning: operating states learned from the data', () => {
     assert.ok(restarted.inventory(t + MINUTE).learnedStates.some((item) => item.driver === pump));
   });
 
+  it('takes up a learned state that changed during the start-up and held', () => {
+    const engine = newEngine();
+    const rand = noise(65);
+    let t = run(engine, T0, T0 + 12 * HOUR, 10 * SECOND, cycle(rand));
+    assert.ok(engine.inventory(t).learnedStates.some((item) => item.driver === pump));
+    // Saved with the watermaker off; switched on as the server comes back,
+    // and left running.
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    t += MINUTE;
+    const restarted = newEngine({}, t);
+    restarted.importState(saved, t);
+    const start = t;
+    t = run(restarted, t, t + 25 * MINUTE, 10 * SECOND, (now) => [[pump, now - start >= 20 * SECOND], [current, (now - start >= 20 * SECOND ? 25 : 5) + 0.2 * rand()]]);
+    assert.deepEqual(opened(restarted, 'shift').filter((entry) => entry.path === current && entry.openedAt >= start), [], 'judged as running, not as a current that jumped');
+    const state = restarted.exportState(t).paths.find((item) => item.path === current);
+    assert.equal(state.regimeKey, `${pump}=true`);
+  });
+
   it('judges a pair against chance with the binomial tail', () => {
     const { binomialTail } = require('../lib/watch/drivers.cjs');
     assert.equal(binomialTail(0, 5, 0.3), 1);
