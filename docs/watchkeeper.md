@@ -558,7 +558,10 @@ Earlier – all back to normal
 
 - The headline is the incident's `title` and its colour the incident's
   `severity`, both as the engine set them; once the incident has resolved it
-  reads *All back to normal at HH:MM*.
+  reads *All back to normal at HH:MM*. An incident a plugin restart closed
+  before its findings were seen to clear reads *Closed by a plugin restart at
+  HH:MM* instead: those findings say *Still open when the plugin restarted at
+  HH:MM*, not *Normal again*, and their section is headed just *Earlier*.
 - Open findings come first, the most severe first, each with since when and
   for how long; cleared ones follow in the order they started, one line each
   with when they were back to normal. More than six earlier lines show the
@@ -570,7 +573,8 @@ Earlier – all back to normal
   several readings of one system (*Under-keel sensor sending no data*). The
   findings themselves are a click away, with their buttons when open.
 - **Copy as text** gives the same lines, under *Needs attention now* and
-  *Earlier – all back to normal*, bounded to about 1,800 characters.
+  *Earlier – all back to normal*, and at most 1,800 characters: when the
+  lines do not fit, the last one says how many findings were left out.
 
 **Notifications.** Each watched path gets one notification carrying its worst
 open finding, plus one each for GNSS, the data feed and each rule. Incidents

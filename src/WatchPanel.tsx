@@ -558,7 +558,7 @@ export default function WatchPanel(props: WatchPanelProps) {
         ) : null}
         {view.earlier.length > 0 || view.omitted ? (
           <>
-            <h4 style={sectionHeading}>Earlier – all back to normal</h4>
+            <h4 style={sectionHeading}>{view.earlierHeading}</h4>
             {view.omitted ? <p style={{ ...mutedText, margin: 0 }}>{view.omitted}, to keep the incident short.</p> : null}
             <ul style={{ margin: 0, paddingLeft: '1.1rem', display: 'grid', gap: '0.2rem', fontSize: '0.9rem' }}>{earlier.map(renderEarlierLine)}</ul>
             {view.earlier.length > view.earlierShown ? (

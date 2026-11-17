@@ -22,8 +22,10 @@ off before reaching them.
   each with the time it started and when it was normal again. More than six
   earlier lines show five and *Show all*. **Trend**, **Mute 1 h** and **Not
   useful** are only on open findings. The headline is the incident's title as
-  the engine sets it, or *All back to normal at HH:MM* once it has resolved;
-  recent incidents open to the same view.
+  the engine sets it, or *All back to normal at HH:MM* once it has resolved
+  (*Closed by a plugin restart at HH:MM* when a restart closed it, with its
+  findings still open then said to be so); recent incidents open to the same
+  view.
 - **Findings that started together share a line.** State switching on
   several systems in the same minute reads *Several systems switched state at
   once (under-keel, remote controller, vision, heading hold)*; no data from

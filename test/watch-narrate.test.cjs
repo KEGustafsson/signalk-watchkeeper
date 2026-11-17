@@ -100,6 +100,17 @@ describe('finding text: numbers rounded to what matters', () => {
       slopePerMinute: 0.5
     });
     assert.equal(ramp.message, '34 °C, usually 25 °C – far outside its normal range, still changing +0.5 °C/min');
+    // A rate too small to show in the units used is not said as "+0.0".
+    for (const slopePerMinute of [0.004, -0.004]) {
+      const creep = narrate('shift', { path: 'electrical.batteries.house.temperature', units: 'K' }, {
+        value: KELVIN + (slopePerMinute > 0 ? 34 : 16),
+        baseline: KELVIN + 25,
+        delta: slopePerMinute > 0 ? 6 : -6,
+        z: slopePerMinute > 0 ? 12 : -12,
+        slopePerMinute
+      });
+      assert.doesNotMatch(creep.message, /changing/);
+    }
   });
 
   it('shows a share as a percentage only when it is one', () => {

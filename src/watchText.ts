@@ -330,6 +330,8 @@ export interface IncidentLine {
   readonly since: number;
   /** When it was back to normal: the last of its findings to clear. */
   readonly clearedAt?: number;
+  /** Still open when a plugin restart closed its incident: never seen back to normal. */
+  readonly closedByRestart?: boolean;
   readonly findings: readonly WatchFinding[];
   /** The single-finding lines it merges; empty for a line of one finding. */
   readonly members: readonly IncidentLine[];
@@ -338,12 +340,18 @@ export interface IncidentLine {
 }
 
 export interface IncidentView {
-  /** What the incident is now: the engine's title while active, "All back to normal at HH:MM" once resolved. */
+  /**
+   * What the incident is now: the engine's title while active, "All back to
+   * normal at HH:MM" once resolved, or "Closed by a plugin restart at HH:MM"
+   * when a restart closed it before its findings were seen to clear.
+   */
   readonly headline: string;
   /** Open findings, most severe first: "Needs attention now". */
   readonly open: readonly IncidentLine[];
   /** Cleared findings, in the order they started: "Earlier – all back to normal". */
   readonly earlier: readonly IncidentLine[];
+  /** "Earlier – all back to normal", or just "Earlier" when a restart closed some of them. */
+  readonly earlierHeading: string;
   /** How many earlier lines show before "Show all"; all of them when there are only a few. */
   readonly earlierShown: number;
   readonly omitted: string;
@@ -383,7 +391,10 @@ function nameOf(finding: WatchFinding): string {
   return finding.name ?? finding.path;
 }
 
-function singleLine(finding: WatchFinding, active: boolean): IncidentLine {
+/** A finding as an incident's view holds it: marked when a restart, not recovery, closed it. */
+type ViewFinding = WatchFinding & { readonly closedByRestart?: boolean };
+
+function singleLine(finding: ViewFinding, active: boolean): IncidentLine {
   const open = finding.clearedAt === undefined;
   return {
     key: `${finding.key}-${finding.openedAt}`,
@@ -396,6 +407,7 @@ function singleLine(finding: WatchFinding, active: boolean): IncidentLine {
     openedAt: finding.openedAt,
     since: typeof finding.since === 'number' && Number.isFinite(finding.since) ? Math.min(finding.since, finding.openedAt) : finding.openedAt,
     clearedAt: finding.clearedAt,
+    closedByRestart: finding.closedByRestart === true,
     findings: [finding],
     members: [],
     actions: active && open
@@ -432,6 +444,7 @@ function mergedLine(group: readonly WatchFinding[], active: boolean): IncidentLi
     openedAt: first.openedAt,
     since: Math.min(...members.map((member) => member.since)),
     clearedAt: open ? undefined : Math.max(...members.map((member) => member.clearedAt ?? member.openedAt)),
+    closedByRestart: members.some((member) => member.closedByRestart),
     findings: group,
     members,
     actions: false
@@ -463,14 +476,28 @@ export function incidentView(incident: WatchIncident): IncidentView {
   const open = linesOf(incident.findings.filter(isOpen), active).sort(
     (a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] || a.openedAt - b.openedAt
   );
+  const closedAt = incident.resolvedAt ?? incident.updatedAt;
+  // A restart that closed the incident closed its open findings at the
+  // restart, as they were never seen to clear: they are not "back to normal".
+  const interrupted = !active && incident.interrupted === true;
   const earlier = linesOf(
-    incident.findings.filter((finding) => !isOpen(finding)).map((finding) => (finding.clearedAt === undefined ? { ...finding, clearedAt: incident.resolvedAt ?? incident.updatedAt } : finding)),
+    incident.findings
+      .filter((finding) => !isOpen(finding))
+      .map((finding): ViewFinding => {
+        const clearedAt = finding.clearedAt ?? closedAt;
+        return interrupted && clearedAt === closedAt ? { ...finding, clearedAt, closedByRestart: true } : { ...finding, clearedAt };
+      }),
     false
   );
   return {
-    headline: active ? incident.title : `All back to normal at ${formatClockTime(incident.resolvedAt ?? incident.updatedAt)}`,
+    headline: active
+      ? incident.title
+      : interrupted
+        ? `Closed by a plugin restart at ${formatClockTime(closedAt)}`
+        : `All back to normal at ${formatClockTime(closedAt)}`,
     open,
     earlier,
+    earlierHeading: earlier.some((line) => line.closedByRestart) ? 'Earlier' : 'Earlier – all back to normal',
     earlierShown: earlier.length > EARLIER_COLLAPSED + 1 ? EARLIER_COLLAPSED : earlier.length,
     omitted: omittedText(incident)
   };
@@ -494,7 +521,11 @@ export function openLineText(line: IncidentLine, now: number = Date.now()): stri
 
 /** `20:25 Victron DC-DC input voltage lower than usual: 13.3 V, usually 13.8 V. Normal again at 21:11.` */
 export function earlierLineText(line: IncidentLine): string {
-  const back = line.members.length > 0 ? `All settled by ${formatClockTime(line.clearedAt)}.` : `Normal again at ${formatClockTime(line.clearedAt)}.`;
+  const back = line.closedByRestart
+    ? `Still open when the plugin restarted at ${formatClockTime(line.clearedAt)}.`
+    : line.members.length > 0
+      ? `All settled by ${formatClockTime(line.clearedAt)}.`
+      : `Normal again at ${formatClockTime(line.clearedAt)}.`;
   const message = line.brief ?? line.message;
   return `${formatClockTime(line.openedAt)} ${line.title}${message ? `: ${sentence(message)}` : '.'} ${back}`;
 }
@@ -506,37 +537,36 @@ export function earlierLineText(line: IncidentLine): string {
  */
 export function incidentText(incident: WatchIncident, now: number = Date.now()): string {
   const view = incidentView(incident);
-  const out: string[] = [`Watchkeeper: ${view.headline}`];
-  let used = out[0].length;
-  let left = view.open.length + view.earlier.length;
-  let full = false;
-  const add = (line: string): boolean => {
-    if (full) return false;
-    if (used + line.length > MAX_TEXT_CHARS) {
-      out.push(`- …and ${left} more`);
-      full = true;
-      return false;
-    }
-    out.push(line);
-    used += line.length + 1;
-    return true;
-  };
+  // Every line in order; `counted` ones are findings, which the overflow
+  // notice counts when they do not fit.
+  const lines: { text: string; counted: boolean }[] = [];
   if (view.open.length > 0) {
-    add('Needs attention now:');
-    for (const line of view.open) {
-      if (!add(`- ${openLineText(line, now)}`)) break;
-      left -= 1;
-    }
+    lines.push({ text: 'Needs attention now:', counted: false });
+    for (const line of view.open) lines.push({ text: `- ${openLineText(line, now)}`, counted: true });
   }
   if (view.earlier.length > 0 || view.omitted) {
-    add('Earlier – all back to normal:');
+    lines.push({ text: `${view.earlierHeading}:`, counted: false });
     // Findings dropped to keep the incident bounded still happened: said
     // first, as they were the earliest.
-    if (view.omitted) add(`- (${view.omitted})`);
-    for (const line of view.earlier) {
-      if (!add(`- ${earlierLineText(line)}`)) break;
-      left -= 1;
+    if (view.omitted) lines.push({ text: `- (${view.omitted})`, counted: false });
+    for (const line of view.earlier) lines.push({ text: `- ${earlierLineText(line)}`, counted: true });
+  }
+  const notice = (count: number) => `- …and ${count} more`;
+  const out = [`Watchkeeper: ${view.headline}`.slice(0, MAX_TEXT_CHARS)];
+  let used = out[0].length;
+  let left = lines.filter((line) => line.counted).length;
+  for (const line of lines) {
+    const after = left - (line.counted ? 1 : 0);
+    // Room for this line and its newline, and for the notice after it should
+    // anything be left over.
+    const needed = 1 + line.text.length + (after > 0 ? 1 + notice(after).length : 0);
+    if (used + needed > MAX_TEXT_CHARS) {
+      if (left > 0 && used + 1 + notice(left).length <= MAX_TEXT_CHARS) out.push(notice(left));
+      break;
     }
+    out.push(line.text);
+    used += 1 + line.text.length;
+    left = after;
   }
   return out.join('\n');
 }

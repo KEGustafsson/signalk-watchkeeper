@@ -238,8 +238,54 @@ describe('incidentText', () => {
       findings: Array.from({ length: 80 }, (_, index) => ({ ...incident.findings[0], key: `k${index}`, path: `a.b${index}` }))
     };
     const text = incidentText(many);
-    assert.ok(text.length < 2200);
+    assert.ok(text.length <= 1800);
     assert.match(text, /…and \d+ more/);
+  });
+
+  it('keeps its separators and the notice of what is left inside the limit', () => {
+    // Lines of every length, so that one of them ends the text right at the
+    // limit with findings still to count.
+    for (let pad = 0; pad < 60; pad += 1) {
+      const many: WatchIncident = {
+        ...incident,
+        findings: Array.from({ length: 40 }, (_, index) => ({
+          ...incident.findings[0],
+          key: `k${index}`,
+          path: `a.b${index}`,
+          message: `${'x'.repeat(pad + (index % 7))} reading`
+        }))
+      };
+      const text = incidentText(many, Date.UTC(2026, 5, 1, 8, 10));
+      assert.ok(text.length <= 1800, `${text.length} characters with padding ${pad}`);
+      const counted = text.split('\n').filter((line) => line.startsWith('- ') && !line.startsWith('- …')).length;
+      const more = /…and (\d+) more$/.exec(text);
+      assert.ok(more !== null, 'says what was left out');
+      assert.equal(counted + Number(more?.[1]), 40);
+    }
+  });
+
+  it('does not call findings a restart closed back to normal', () => {
+    const restartAt = Date.UTC(2026, 5, 1, 9, 0);
+    const closed: WatchIncident = {
+      ...incident,
+      status: 'resolved',
+      resolvedAt: restartAt,
+      interrupted: true,
+      // The restart closed the open finding at the restart; the other had
+      // recovered on its own before.
+      findings: incident.findings.map((finding) => ({ ...finding, clearedAt: finding.clearedAt ?? restartAt }))
+    };
+    const view = incidentView(closed);
+    assert.match(view.headline, /^Closed by a plugin restart at \d\d:00$/);
+    assert.equal(view.earlierHeading, 'Earlier');
+    const text = incidentText(closed);
+    assert.doesNotMatch(text, /All back to normal/);
+    assert.match(text, /Main engine temperature higher than usual: .*Still open when the plugin restarted at \d\d:00\.$/m);
+    assert.match(text, /Main alternator current lower than usual: .*Normal again at \d\d:05\.$/m);
+    // Resolved on its own: back to normal, as before.
+    const recovered = incidentView({ ...closed, interrupted: false });
+    assert.match(recovered.headline, /^All back to normal at /);
+    assert.equal(recovered.earlierHeading, 'Earlier – all back to normal');
   });
 
   it('says how many earlier findings were dropped to keep it bounded', () => {
