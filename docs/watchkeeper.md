@@ -225,7 +225,9 @@ and 0.3 reports in steps of 0.01, and moving by one is its rounding, not
 news. Such a step is the noise floor once (a learned step counts twice, as a
 sensor flickering between two neighbours is not departing). Whole numbers,
 values computed in floating point (279.76000000000005) and a departure's own
-readings say nothing this way.
+readings say nothing this way. A reading computed in floating point
+(0.29000000000000004) does not erase a resolution learned, and a sender most
+of whose readings look like that has none to learn.
 
 A path that sits at zero (packet loss, an alarm count) has no "5 % of its
 value", so its floor is its resolution. Before that rule, a mean that had
@@ -320,7 +322,7 @@ indicator uses evidence the receiver does not control:
 
 | Indicator | Fires when | Persist / clear |
 | --- | --- | --- |
-| `jump` | Two consecutive fixes from one source are more than 100 m apart **and** imply more than 40 kn. It waits for the source's next fix: back where the vessel was before (within 100 m, or no faster than 40 kn from there), the fix between was one bad fix and not a jump - an AIS transponder sending its own position, as it starts, rounded to 60.28, 22.285 between precise ones. Anywhere else, or no next fix within 5 s (three of the source's intervals, if longer), it is reported. `alert` above 5 km. Held 10 min | immediate |
+| `jump` | Two consecutive fixes from one source are more than 100 m apart **and** imply more than 40 kn. It waits for the source's next fix: back where the vessel was before (within 100 m, or no faster than 40 kn from there), the fix between was one bad fix and not a jump - an AIS transponder sending its own position, as it starts, rounded to 60.28, 22.285 between precise ones. Anywhere else, or no next fix within 5 s (three of the source's intervals, if longer), it is reported, and held from then; when it was first seen is in its evidence (`detectedAt`). Each source's jump waits for its own next fix. `alert` above 5 km. Held 10 min | immediate |
 | `deadReckoning` | The fix is further from dead reckoning (true heading + speed through water, integrated from an agreeing fix) than **150 m + 25 % of distance run + 2 kn × elapsed time**. Heading and log must be fresh (≤ 5 s). The reference is re-anchored every 10 minutes, and only on a fix that agrees, so a spoofed position never becomes the reference | 30 s / 60 s |
 | `sourcesDisagree` | Two position sources updated within 10 s of each other are more than 100 m apart | 30 s / 60 s |
 | `quality` | Fewer than 4 satellites, or horizontal dilution above 5, on a receiver that has reported at least 6 satellites or dilution below 2 at least 20 times | 30 s / 60 s |

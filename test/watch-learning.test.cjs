@@ -971,6 +971,33 @@ describe('watch learning: a transponder that rounds its own position', () => {
     assert.ok(opened(engine, 'gnss.jump').length > 0, detectors(engine).join(', '));
   });
 
+  it('keeps each receiver\'s jump to itself', () => {
+    const engine = newEngine();
+    const home = { latitude: 60.28056333333333, longitude: 22.28656 };
+    const away = { latitude: 60.29056333333333, longitude: 22.28656 };
+    let t = run(engine, T0, T0 + 10 * MINUTE, SECOND, () => [['navigation.position', home, 'a'], ['navigation.position', home, 'b']]);
+    // a jumps and stays; b jumps too before a's next fix, then comes back.
+    engine.ingest('navigation.position', away, t, 'a');
+    engine.ingest('navigation.position', away, t + 100, 'b');
+    engine.ingest('navigation.position', home, t + 200, 'b');
+    t = run(engine, t + SECOND, t + 30 * SECOND, SECOND, () => [['navigation.position', away, 'a'], ['navigation.position', home, 'b']]);
+    const jumps = opened(engine, 'gnss.jump');
+    assert.ok(jumps.length > 0, 'a\'s jump is reported');
+  });
+
+  it('holds a jump confirmed late from when it was confirmed', () => {
+    const gnss = require('../lib/watch/gnss.cjs');
+    const options = { gnssJumpMinMetres: 100, gnssMaxSpeedKn: 40, eventHoldMs: 10 * MINUTE };
+    const state = gnss.createGnssState();
+    state.fixInterval = 5 * MINUTE;
+    gnss.observeGnss(state, 'navigation.position', { latitude: 60, longitude: 22 }, T0, 'slow', options);
+    gnss.observeGnss(state, 'navigation.position', { latitude: 60.1, longitude: 22 }, T0 + 5 * MINUTE, 'slow', options);
+    // No next fix: confirmed after three intervals, fifteen minutes on.
+    const indicators = gnss.evaluateGnss(state, T0 + 20 * MINUTE + SECOND, options);
+    assert.equal(indicators.jump && indicators.jump.active, true);
+    assert.equal(indicators.jump.evidence.detectedAt, T0 + 5 * MINUTE);
+  });
+
   it('still reports a real jump between precise fixes', () => {
     const engine = newEngine();
     let t = run(engine, T0, T0 + 10 * MINUTE, SECOND, () => [['navigation.position', { latitude: 60.28056333333333, longitude: 22.28656 }, 'gps']]);
@@ -987,6 +1014,24 @@ describe('watch learning: a sender that rounds its readings', () => {
     let t = run(engine, T0, T0 + 3 * HOUR, 10 * SECOND, () => [[path, 0.29]]);
     t = run(engine, t, t + 10 * MINUTE, 10 * SECOND, () => [[path, 0.3]]);
     assert.deepEqual(opened(engine, 'shift'), []);
+  });
+
+  it('keeps the learned rounding through a floating-point artefact', () => {
+    const state = monitor.createPathState('environment.nano.sd.utilisation', T0);
+    let t = T0;
+    for (let index = 0; index < 40; index += 1) monitor.observe(state, 0.29, (t += 10 * SECOND), { minIntervalMs: 1000 });
+    monitor.observe(state, 0.29000000000000004, (t += 10 * SECOND), { minIntervalMs: 1000 });
+    assert.equal(state.maxDecimals, 2);
+    assert.equal(monitor.resolutionOf(state), 0.01);
+  });
+
+  it('learns no rounding from a sender most of whose readings are computed in floating point', () => {
+    const state = monitor.createPathState('environment.inside.cabin.temperature', T0);
+    let t = T0;
+    for (let index = 0; index < 60; index += 1) monitor.observe(state, index % 2 ? 279.76 : 279.76000000000005, (t += 10 * SECOND), { minIntervalMs: 1000 });
+    // Only what the decimals say: a step seen three times is its own matter.
+    state.quantum = undefined;
+    assert.equal(monitor.resolutionOf(state), undefined);
   });
 
   it('still reports a real step of a reading sent with many decimals', () => {
