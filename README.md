@@ -26,11 +26,14 @@ receivers do not corroborate.
 - **Operating states.** When an engine starts or a charger changes mode, the
   affected paths re-learn (or restore the baseline they had in that state)
   instead of alerting. Day and night are an operating state of everything
-  solar, worked out from the vessel's own position.
+  solar, worked out from the vessel's own position. Other operating states
+  are learned from the data: a path whose changes other paths reliably
+  answer (a watermaker, a generator) becomes theirs, with no name needed.
 - **Habits.** A path that keeps making the same kind of departure and coming
   back from it on its own (a radio link's packet loss spiking for a minute
   several times a day) is reported the first few times, then only when it
-  goes clearly further or lasts clearly longer than usual.
+  goes further or lasts longer than its own episodes make likely, against an
+  alert budget the sensitivity sets.
 - **Its own yardsticks.** A sensor is stuck when it holds a value far longer
   than it ever normally does in that operating state; a counter shows itself
   by its resets and is watched by how fast it counts.

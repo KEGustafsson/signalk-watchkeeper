@@ -317,26 +317,46 @@ describe('watch learning: resets seen on a moored boat\'s link and modem', () =>
     assert.equal(engine.inventory(t).paths.find((item) => item.path === path).kind, 'counter');
   });
 
-  it('knows a modem\'s byte counts and a link\'s retransmissions by name', () => {
-    for (const path of ['networking.lte.usage.rx', 'networking.lte.usage.tx', 'networking.edgeLink.boat.retransmissions', 'networking.wan.rxBytes', 'networking.edgeLink.boat.sequenceNumber']) {
-      const state = monitor.createPathState(path, T0);
-      Object.assign(state, { kind: 'continuous', n: 100, rose: true, monotonic: true, rises: 100 });
-      assert.equal(monitor.isCounterState(state), true, path);
-    }
+  it('takes a count that only climbs through a whole day for a counter, whatever its name', () => {
+    const engine = newEngine();
+    const path = 'networking.modem.usage.rx';
+    let value = 3e8;
+    let t = run(engine, T0, T0 + 20 * HOUR, MINUTE, () => [[path, (value += 15000)]]);
+    const kind = () => engine.inventory(t).paths.find((item) => item.path === path).kind;
+    assert.notEqual(kind(), 'counter', 'twenty hours of climbing are not yet a day');
+    t = run(engine, t, t + 5 * HOUR, MINUTE, () => [[path, (value += 15000)]]);
+    assert.equal(kind(), 'counter');
+  });
+
+  it('does not take a reading that climbs all day, with its noise, for a counter', () => {
+    const state = monitor.createPathState('plugins.example.reading', T0);
+    let t = T0;
+    const rand = noise(67);
+    // Climbing, as a measurement does: with its noise, now and then down.
+    for (let index = 0; index < 26 * 60; index += 1) monitor.observe(state, 12 + index * 0.001 + 0.004 * rand(), (t += MINUTE), {});
+    assert.equal(monitor.isCounterState(state), false);
   });
 
   it('learns again whether a saved counter falls, once', () => {
-    const state = monitor.importPathState({ path: 'networking.lte.usage.rx', kind: 'continuous', n: 9000, rose: true, monotonic: false, rises: 8900 }, T0);
+    const state = monitor.importPathState({ path: 'networking.lte.dataTotal', kind: 'continuous', n: 9000, rose: true, monotonic: false, rises: 8900 }, T0);
     assert.equal(state.monotonic, true);
     assert.equal(monitor.isCounterState(state), true);
     const again = monitor.importPathState(JSON.parse(JSON.stringify(monitor.exportPathState({ ...state, monotonic: false }))), T0);
     assert.equal(again.monotonic, false, 'a fall learned since is kept');
   });
 
-  it('does not watch yesterday\'s figures, which change at midnight by design', () => {
+  it('learns a daily figure\'s midnight step as its habit, without being told what the path is', () => {
     const engine = newEngine();
-    const t = run(engine, T0, T0 + MINUTE, 10 * SECOND, () => [['electrical.solar.main.maximumPowerYesterday', 11]]);
-    assert.equal(engine.inventory(t).paths.find((item) => item.path === 'electrical.solar.main.maximumPowerYesterday').role, 'skipped');
+    const path = 'electrical.solar.main.maximumPowerYesterday';
+    const rand = noise(66);
+    // Yesterday's best power: one value all day, a new one each midnight.
+    const values = Array.from({ length: 10 }, () => Math.round(200 + 150 * rand()));
+    const daily = (now) => [[path, values[Math.floor((now - T0) / (24 * HOUR))]]];
+    let t = run(engine, T0, T0 + 7 * 24 * HOUR, 2 * MINUTE, daily);
+    const early = opened(engine, 'shift').filter((entry) => entry.path === path).length;
+    assert.ok(early >= 1, 'its first steps are news');
+    t = run(engine, t, t + 3 * 24 * HOUR, 2 * MINUTE, daily);
+    assert.equal(opened(engine, 'shift').filter((entry) => entry.path === path).length, early, 'by now a step of its usual size is its habit');
   });
 
   it('gets used to a sensor that has spells of no value, and still reports one that lasts far longer', () => {
@@ -1089,5 +1109,186 @@ describe('watch learning: a sender that rounds its readings', () => {
     let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [[path, 0.29 + 0.0001 * rand()]]);
     t = run(engine, t, t + 2 * MINUTE, 10 * SECOND, () => [[path, 0.32 + 0.0001 * rand()]]);
     assert.ok(detectors(engine).includes(`shift:${path}`), detectors(engine).join(', '));
+  });
+});
+
+describe('watch learning: operating states learned from the data', () => {
+  const pump = 'plugins.watermaker.running';
+  const current = 'electrical.batteries.house.current';
+
+  // A watermaker nobody named: on for half an hour every two hours, and the
+  // house current up by 20 A while it runs.
+  function cycle(rand, offsetHours = 0) {
+    return (now) => {
+      const phase = (now - T0 - offsetHours * HOUR) % (2 * HOUR);
+      const on = phase >= HOUR && phase < HOUR + 30 * MINUTE;
+      return [[pump, on], [current, (on ? 25 : 5) + 0.2 * rand()]];
+    };
+  }
+
+  it('learns that a watermaker moves the house current, and stops reporting its runs', () => {
+    const engine = newEngine();
+    const rand = noise(61);
+    let t = run(engine, T0, T0 + 12 * HOUR, 10 * SECOND, cycle(rand));
+    const runs = opened(engine, 'shift').filter((entry) => entry.path === current);
+    assert.ok(runs.length >= 1, 'its first runs are news');
+    const learned = engine.inventory(t).learnedStates.find((item) => item.driver === pump);
+    assert.ok(learned && learned.paths.some((item) => item.path === current), JSON.stringify(engine.inventory(t).learnedStates));
+    const before = runs.length;
+    t = run(engine, t, t + 8 * HOUR, 10 * SECOND, cycle(rand));
+    assert.equal(opened(engine, 'shift').filter((entry) => entry.path === current).length, before, 'learned: its later runs are an operating state');
+  });
+
+  it('still reports the current stepping with no change of the watermaker', () => {
+    const engine = newEngine();
+    const rand = noise(62);
+    let t = run(engine, T0, T0 + 12 * HOUR, 10 * SECOND, cycle(rand));
+    const before = opened(engine, 'shift').filter((entry) => entry.path === current).length;
+    // An hour into the off part of a cycle, the current jumps on its own.
+    const start = T0 + Math.ceil((t - T0) / (2 * HOUR)) * 2 * HOUR + 10 * MINUTE;
+    t = run(engine, t, start, 10 * SECOND, cycle(rand));
+    t = run(engine, t, t + 5 * MINUTE, 10 * SECOND, () => [[pump, false], [current, 45 + 0.2 * rand()]]);
+    assert.ok(opened(engine, 'shift').filter((entry) => entry.path === current).length > before, 'a step of its own is news');
+  });
+
+  it('learns nothing from a change no path answers', () => {
+    const engine = newEngine();
+    const rand = noise(63);
+    const t = run(engine, T0, T0 + 12 * HOUR, 10 * SECOND, (now) => [
+      ['plugins.example.mode', Math.floor((now - T0) / (40 * MINUTE)) % 2 ? 'a' : 'b'],
+      [current, 5 + 0.2 * rand()]
+    ]);
+    assert.deepEqual(engine.inventory(t).learnedStates, []);
+  });
+
+  it('keeps what it learned across a restart', () => {
+    const engine = newEngine();
+    const rand = noise(64);
+    let t = run(engine, T0, T0 + 12 * HOUR, 10 * SECOND, cycle(rand));
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    const restarted = newEngine({}, t + MINUTE);
+    restarted.importState(saved, t + MINUTE);
+    assert.ok(restarted.inventory(t + MINUTE).learnedStates.some((item) => item.driver === pump));
+  });
+
+  it('judges a pair against chance with the binomial tail', () => {
+    const { binomialTail } = require('../lib/watch/drivers.cjs');
+    assert.equal(binomialTail(0, 5, 0.3), 1);
+    assert.ok(Math.abs(binomialTail(1, 1, 0.3) - 0.3) < 1e-12);
+    assert.ok(Math.abs(binomialTail(2, 3, 0.5) - 0.5) < 1e-12);
+    assert.ok(binomialTail(4, 4, 0.08) < 1e-3);
+    assert.ok(binomialTail(1000, 1000, 0.9999) > 0.5, 'a driver in every window explains nothing');
+  });
+
+  it('learns nothing from a path that changes all the time', () => {
+    const engine = newEngine();
+    const rand = noise(65);
+    const t = run(engine, T0, T0 + 12 * HOUR, 10 * SECOND, (now) => [
+      ['plugins.example.lastUpdate', new Date(now).toISOString()],
+      ...cycle(rand)(now)
+    ]);
+    const learned = engine.inventory(t).learnedStates;
+    assert.ok(!learned.some((item) => item.driver === 'plugins.example.lastUpdate'), JSON.stringify(learned));
+    assert.ok(learned.some((item) => item.driver === pump), 'the watermaker is still learned beside it');
+  });
+});
+
+describe('watch learning: how each source comes back after a restart', () => {
+  const ble = 'environment.inside.bedroom.temperature';
+  const gps = 'navigation.speedOverGroundIndicator';
+  function restartEngine(engine, t) {
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    const next = newEngine({}, t + 10 * SECOND);
+    next.importState(saved, t + 10 * SECOND);
+    return { engine: next, t: t + 10 * SECOND };
+  }
+  // The Bluetooth sensor is heard six minutes after each restart; the other
+  // source at once.
+  const sample = (rand, since, dead = false) => (now) => [
+    ...(now - since >= 6 * MINUTE ? [[ble, 290 + 0.1 * rand(), 'bt.bedroom']] : []),
+    ...(dead ? [] : [[gps, 3 + 0.05 * rand(), 'nmea.gps']])
+  ];
+
+  it('learns how long each source takes, and judges each path by its own', () => {
+    const rand = noise(71);
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, sample(rand, T0 - HOUR));
+    for (let index = 0; index < 3; index += 1) {
+      ({ engine, t } = restartEngine(engine, t));
+      t = run(engine, t, t + 30 * MINUTE, 10 * SECOND, sample(rand, t));
+    }
+    const learned = Object.fromEntries(engine.inventory(t).restarts.map((item) => [item.source, item.reacquireMs]));
+    assert.ok(learned['bt.bedroom'] >= 6 * MINUTE && learned['bt.bedroom'] <= 10 * MINUTE, JSON.stringify(learned));
+    assert.ok(learned['nmea.gps'] <= 2 * MINUTE, JSON.stringify(learned));
+    // Once more: the Bluetooth sensor takes its six minutes, and the other
+    // source's path never comes back.
+    ({ engine, t } = restartEngine(engine, t));
+    const restartedAt = t;
+    t = run(engine, t, t + 8 * MINUTE, 10 * SECOND, sample(rand, t, true));
+    const dropouts = opened(engine, 'dropout');
+    assert.ok(!dropouts.some((entry) => entry.path === ble), 'its six minutes are how it comes back');
+    const dead = dropouts.find((entry) => entry.path === gps);
+    assert.ok(dead && dead.openedAt - restartedAt < 5 * MINUTE, 'the quick source\'s dead path is reported in minutes, not a quarter of an hour');
+  });
+});
+
+describe('watch learning: adaptive thresholds and what a number is', () => {
+  it('fits how far is news to how much a path\'s episodes vary, never far past its record', () => {
+    const alike = monitor.createPathState('plugins.example.alike', T0);
+    const varied = monitor.createPathState('plugins.example.varied', T0);
+    let t = T0;
+    const sizesAlike = [10, 10.5, 9.8, 10.2, 10.1, 9.9, 10.3, 10];
+    const sizesVaried = [4, 25, 9, 60, 12, 7, 30, 15];
+    for (let index = 0; index < sizesAlike.length; index += 1) {
+      for (const [state, size] of [[alike, sizesAlike[index]], [varied, sizesVaried[index]]]) {
+        habits.follow(state, 'shift+', size, true, t);
+        habits.follow(state, 'shift+', 0, false, t + MINUTE);
+      }
+      t += 3 * HOUR;
+    }
+    const limitAlike = habits.judge(alike, 'shift+', 0, t).usual.peakLimit;
+    const limitVaried = habits.judge(varied, 'shift+', 0, t).usual.peakLimit;
+    assert.ok(limitAlike > 10.5 && limitAlike < 15, `alike: ${limitAlike}`);
+    assert.ok(limitVaried > 60 && limitVaried < 200, `varied: ${limitVaried}`);
+    assert.equal(habits.judge(alike, 'shift+', 16, t).beyond, true, 'a spike half again its alike ones is news');
+    assert.equal(habits.judge(varied, 'shift+', 16, t).beyond, false, 'the same is routine where spikes vary this much');
+  });
+
+  it('reports fewer routine episodes at low sensitivity than at high', () => {
+    const state = monitor.createPathState('plugins.example.spiky', T0);
+    let t = T0;
+    const sizes = [8, 12, 9, 15, 10, 11, 13, 9, 14, 10];
+    for (const size of sizes) {
+      habits.follow(state, 'shift+', size, true, t);
+      habits.follow(state, 'shift+', 0, false, t + MINUTE);
+      t += 2 * HOUR;
+    }
+    const low = habits.judge(state, 'shift+', 0, t, 0.01).usual.peakLimit;
+    const high = habits.judge(state, 'shift+', 0, t, 0.1).usual.peakLimit;
+    assert.ok(low > high, `${low} > ${high}`);
+  });
+
+  it('does not file a baseline under an operating state while the path is away from it', () => {
+    const state = monitor.createPathState('electrical.batteries.house.current', T0);
+    Object.assign(state, { kind: 'continuous', mean: 5, variance: 0.04, n: 5000, firstAt: T0, relearnUntil: 0, excursionSince: T0 + HOUR });
+    const options = { minSamples: 30, learningMs: 20 * MINUTE };
+    assert.equal(monitor.saveRegimeBaseline(state, 'pump=on', T0 + 2 * HOUR, options), false);
+    state.excursionSince = undefined;
+    assert.equal(monitor.saveRegimeBaseline(state, 'pump=on', T0 + 2 * HOUR, options), true);
+  });
+
+  it('tells a whole-number reading that keeps taking new values from a state code', () => {
+    const engine = newEngine();
+    const reading = 'plugins.example.dailyBest';
+    const code = 'plugins.example.phase';
+    // The reading: a new whole number every two hours. The code: 1, 2, 1, 2.
+    let t = run(engine, T0, T0 + 12 * HOUR, MINUTE, (now) => {
+      const slot = Math.floor((now - T0) / (2 * HOUR));
+      return [[reading, [120, 131, 117, 140, 125, 133][slot % 6]], [code, slot % 2 ? 2 : 1]];
+    });
+    t = run(engine, t, t + 30 * MINUTE, MINUTE, () => [[reading, 150], [code, 7]]);
+    const states = opened(engine, 'newState').map((entry) => entry.path);
+    assert.ok(states.includes(code), 'a code taking a value it never had is news');
+    assert.ok(!states.filter((path) => path === reading).length || engine.inventory(t).paths.find((item) => item.path === reading).kind === 'continuous', 'a reading taking a new value is measuring');
   });
 });
