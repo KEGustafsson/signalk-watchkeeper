@@ -1877,6 +1877,29 @@ describe('incidents: what is still open names and rates them, and nothing chains
     assert.equal(incidents.length, 2);
   });
 
+  it('reopens an incident older than 10 minutes when a finding opens in the tick it resolved', () => {
+    // A cascade that keeps joining for 10 minutes, all of it clearing at
+    // minute 11 as the bilge finding opens: the bilge reopens the cascade.
+    const watches = [
+      { id: 'r-alternator', path: 'electrical.alternators.main.voltage', severity: 'warn', on: [[0, 11]] },
+      { id: 'r-house', path: 'electrical.batteries.house.voltage', severity: 'warn', on: [[2.5, 11]] },
+      { id: 'r-engine-temp', path: 'propulsion.main.temperature', severity: 'warn', on: [[5, 11]] },
+      { id: 'r-water', path: 'tanks.freshWater.0.currentLevel', severity: 'warn', on: [[7.5, 11]] },
+      { id: 'r-fridge', path: 'environment.inside.refrigerator.temperature', severity: 'warn', on: [[9.5, 11]] },
+      { id: 'r-bilge', path: 'environment.bilge.level', severity: 'warn', on: [[11, OPEN]] }
+    ];
+    const engine = createWatchEngine(normalizeWatchConfig({ watchEnabled: true, watchLearningMinutes: 20, watchExcludePaths: ['electrical', 'propulsion', 'environment', 'tanks'] }), { now: T });
+    engine.setRules(watches.map((item) => ({ id: item.id, path: item.path, op: 'above', value: 0.5, forSeconds: 0, severity: item.severity, source: 'manual' })));
+    play(engine, watches, 0, 13);
+    const cascade = incidentWith(engine, 'r-alternator');
+    assert.deepEqual(
+      cascade.findings.map((entry) => entry.key.slice(5)),
+      ['r-alternator', 'r-house', 'r-engine-temp', 'r-water', 'r-fridge', 'r-bilge']
+    );
+    assert.equal(cascade.status, 'active');
+    assert.equal(engine.status().incidents.length, 1);
+  });
+
   it('takes a same-system finding into the incident while that system has an open finding in it', () => {
     const watches = [
       { id: 'r-coolant', path: 'propulsion.main.coolantTemperature', severity: 'warn', on: [[0, 90]] },

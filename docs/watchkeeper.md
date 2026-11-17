@@ -472,8 +472,9 @@ does not drop back.
   with no value does not take in whatever happens meanwhile.
 
 GNSS findings only ever group with GNSS findings. A finding that opens in the
-tick an incident resolved reopens it (a finding that cleared in that tick
-counts as still open), and the incident is then named after it while it is
+tick an incident resolved reopens it, by system or by the 3-minute gap
+alone, whatever its age (a finding that cleared in that tick counts as still
+open), and the incident is then named after it while it is
 open. Findings are listed in the order they started, so the first one is
 labelled *first sign*.
 
