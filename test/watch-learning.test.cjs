@@ -1492,4 +1492,36 @@ describe('watch learning: a path\'s own settling after restarts', () => {
     assert.ok(found.length === 1 && found[0].openedAt - start < 4 * MINUTE, JSON.stringify(opened(engine, 'shift')));
     assert.equal(opened(engine, 'shift').filter((entry) => entry.path === rtt).length, rttBefore);
   });
+
+  it('measures a settling that ends within the start-up when it ends, once per restart', () => {
+    const rtt = 'networking.edgeLink.boat.rtt';
+    const rand = noise(17);
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[rtt, 0.05 + 0.002 * rand(), 'link']]);
+    const restart = () => {
+      const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+      t += 10 * SECOND;
+      engine = newEngine({}, t);
+      engine.importState(saved, t);
+    };
+    const settles = () => engine.exportState(t).paths.find((item) => item.path === rtt).restartSettles || [];
+    // High for its first 40 s after every restart, well within the start-up.
+    for (let index = 0; index < 5; index += 1) {
+      restart();
+      const start = t;
+      t = run(engine, t, t + 20 * MINUTE, SECOND, (now) => [[rtt, (now - start < 40 * SECOND ? 0.4 : 0.05) + 0.002 * rand(), 'link']]);
+    }
+    assert.equal(settles().length, 5, JSON.stringify(settles()));
+    // The 40 s and its average's fading, not the rest of a start-up that
+    // grows with every restart measured that way.
+    const first = settles()[0];
+    assert.ok(first < 2 * MINUTE && settles().every((ms) => Math.abs(ms - first) <= 10 * SECOND), JSON.stringify(settles()));
+    // High, back for 20 s, and high again: one restart, settled at its last end.
+    restart();
+    const start = t;
+    t = run(engine, t, t + 20 * MINUTE, SECOND, (now) => [[rtt, (now - start < 40 * SECOND || (now - start >= 60 * SECOND && now - start < 100 * SECOND) ? 0.4 : 0.05) + 0.002 * rand(), 'link']]);
+    const after = settles();
+    assert.equal(after.length, 6, JSON.stringify(after));
+    assert.ok(after[5] >= first + 45 * SECOND && after[5] <= first + 75 * SECOND, JSON.stringify(after));
+  });
 });

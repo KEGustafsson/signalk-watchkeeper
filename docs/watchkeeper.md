@@ -1222,7 +1222,9 @@ through a restart, the defaults given here hold. The inventory lists them
   source's usual time to be heard again and the settling after that (a link
   reconnecting spikes its round-trip time once it is heard): as long as the
   path's own departures after its last 8 restarts lasted once it was heard
-  again, fitted as the windows below are, 2 minutes at least and 15 at most
+  again (each to its last end, also when that was within the start-up, not
+  to the start-up's end - a start-up measured by itself would grow at every
+  restart), fitted as the windows below are, 2 minutes at least and 15 at most
   (a departure lasting longer after a restart is a fault that began then,
   and is not learned as settling). The path's own, not its source's: a
   battery's voltage from the plugin whose link spikes at every restart has

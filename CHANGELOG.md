@@ -39,7 +39,8 @@ on a boat's own recording.
   habits are, so a source that always takes ten seconds is given little
   more and an erratic one well more - and how long each path's own
   departures after a restart take to settle (a link's round-trip time while
-  it reconnects), so its start-up allows for them and its source's other
+  it reconnects; to when each ended, also within the start-up, once per
+  restart), so its start-up allows for them and its source's other
   paths' does not. Each path's start-up, reacquiring and detour, and how
   long carried findings wait, follow from it; the fixed windows are only the
   defaults until then. Listed in the inventory (`restarts`).
