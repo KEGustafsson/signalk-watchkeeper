@@ -660,7 +660,14 @@ describe('watch learning: a restart is not news', () => {
     t = run(engine, t, t + 3 * MINUTE, SECOND, (now) => [[rtt, now - start < MINUTE ? 0.4 : 0.05 + 0.002 * rand()]]);
     assert.deepEqual(opened(engine, 'shift'), []);
     ({ engine, t } = restart(engine, t));
-    t = run(engine, t, t + 3 * MINUTE, SECOND, () => [[rtt, 0.4 + 0.002 * rand()]]);
+    // It has been seen to settle within a minute or so of being heard
+    // again: its start-up now allows for that, and is still over in
+    // minutes.
+    const saved = engine.exportState(t);
+    const restartLearning = require('../lib/watch/restarts.cjs');
+    const startup = restartLearning.startupFor(saved.restarts, 'default', saved.paths.find((item) => item.path === rtt).restartSettles);
+    assert.ok(startup > 2 * MINUTE && startup < 4 * MINUTE, String(startup));
+    t = run(engine, t, t + startup + MINUTE, SECOND, () => [[rtt, 0.4 + 0.002 * rand()]]);
     assert.ok(detectors(engine).includes(`shift:${rtt}`), 'still bad once start-up is over: reported');
   });
 
@@ -1290,5 +1297,199 @@ describe('watch learning: adaptive thresholds and what a number is', () => {
     const states = opened(engine, 'newState').map((entry) => entry.path);
     assert.ok(states.includes(code), 'a code taking a value it never had is news');
     assert.ok(!states.filter((path) => path === reading).length || engine.inventory(t).paths.find((item) => item.path === reading).kind === 'continuous', 'a reading taking a new value is measuring');
+  });
+});
+
+describe('watch learning: yardsticks learned from the data', () => {
+  const level = 'plugins.example.level';
+
+  it('measures a departure by how far the path\'s average usually strays, not by how its readings scatter', () => {
+    // Readings that scatter by ±2 on their own, once a second: their
+    // average hardly moves, and a lasting step of 2.5 is plain in it,
+    // though it is little more than two of the readings' spreads.
+    const engine = newEngine();
+    const rand = noise(81);
+    let t = run(engine, T0, T0 + 3 * HOUR, SECOND, () => [[level, 50 + 2 * rand()]]);
+    assert.deepEqual(opened(engine, 'shift'), [], 'its scatter is no departure');
+    t = run(engine, t, t + 3 * MINUTE, SECOND, () => [[level, 52.5 + 2 * rand()]]);
+    const found = engine.status().activeFindings.find((entry) => entry.detector === 'shift' && entry.path === level);
+    assert.ok(found, 'the step is reported');
+    const spreads = Number(/\(([\d.]+)× its normal variation/.exec(found.message)[1]);
+    assert.ok(spreads < 6, `in its readings' spreads it is small: ${found.message}`);
+    assert.match(found.message, /its average usually stays within ±/);
+  });
+
+  it('does not report the same step on a path whose readings wander together', () => {
+    // The same spread, but each reading close to the last: its average
+    // wanders as far as its readings do, and 2.5 is within that.
+    const engine = newEngine();
+    const rand = noise(82);
+    let wander = 0;
+    const sample = (offset) => () => {
+      wander = 0.995 * wander + 0.12 * rand();
+      return [[level, 50 + offset + wander]];
+    };
+    let t = run(engine, T0, T0 + 3 * HOUR, SECOND, sample(0));
+    const before = opened(engine, 'shift').length;
+    const spread = Math.sqrt(engine.exportState(t).paths.find((item) => item.path === level).variance);
+    t = run(engine, t, t + 3 * MINUTE, SECOND, sample(2 * spread));
+    assert.equal(opened(engine, 'shift').length, before, `a step of two spreads (${spread.toFixed(2)} each) is how it wanders`);
+  });
+
+  it('judges a path saved before the yardstick was learned as it was judged then', () => {
+    const engine = newEngine();
+    const rand = noise(83);
+    const t = run(engine, T0, T0 + 2 * HOUR, SECOND, () => [[level, 50 + 2 * rand()]]);
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    const entry = saved.paths.find((item) => item.path === level);
+    assert.ok(Number.isFinite(entry.devVar) && entry.devVar < entry.variance / 4, `learned: ${entry.devVar} of ${entry.variance}`);
+    delete entry.devVar;
+    const restarted = newEngine({}, t + SECOND);
+    restarted.importState(saved, t + SECOND);
+    restarted.ingest(level, 50, t + SECOND);
+    const after = restarted.exportState(t + SECOND).paths.find((item) => item.path === level);
+    assert.ok(Math.abs(after.devVar / after.variance - 1) < 0.05, `starts from its spread: ${after.devVar} of ${after.variance}`);
+  });
+
+  it('learns an operating state whose answer takes longer than five minutes', () => {
+    // A heater nobody named: on for an hour every three, and the salon
+    // twelve minutes later 6 K warmer.
+    const heater = 'plugins.heater.on';
+    const salon = 'environment.inside.salon.temperature';
+    const engine = newEngine();
+    const rand = noise(84);
+    const t = run(engine, T0, T0 + 30 * HOUR, 10 * SECOND, (now) => {
+      const phase = (now - T0) % (3 * HOUR);
+      const on = phase >= HOUR && phase < 2 * HOUR;
+      const warm = phase >= HOUR + 12 * MINUTE && phase < 2 * HOUR;
+      return [[heater, on], [salon, (warm ? 297 : 291) + 0.2 * rand()]];
+    });
+    const learned = engine.inventory(t).learnedStates.find((item) => item.driver === heater);
+    assert.ok(learned && learned.paths.some((item) => item.path === salon && item.lagMs >= 10 * MINUTE), JSON.stringify(engine.inventory(t).learnedStates));
+  });
+
+  it('keeps one entry for a path changing every second', () => {
+    const learnedStates = require('../lib/watch/drivers.cjs');
+    const drivers = learnedStates.createDrivers(T0);
+    for (let index = 0; index < 3600; index += 1) learnedStates.noteTransition(drivers, 'plugins.example.lastUpdate', T0 + index * SECOND);
+    learnedStates.noteTransition(drivers, 'plugins.watermaker.running', T0 + HOUR);
+    assert.equal(Object.keys(drivers.last).length, 2);
+    const { credited } = learnedStates.noteOnset(drivers, 'electrical.batteries.house.current', T0 + HOUR + MINUTE);
+    assert.deepEqual(credited.sort(), ['plugins.example.lastUpdate', 'plugins.watermaker.running']);
+  });
+
+  it('gives a steady source little more than it takes after a restart, an erratic one more, and learns its settling', () => {
+    const restartLearning = require('../lib/watch/restarts.cjs');
+    const restarts = restartLearning.createRestarts();
+    for (const ms of [30, 31, 29, 30, 32, 30].map((s) => s * SECOND)) restartLearning.note(restarts, 'steady', 'reacquire', ms);
+    for (const ms of [20, 300, 60, 150].map((s) => s * SECOND)) restartLearning.note(restarts, 'erratic', 'reacquire', ms);
+    assert.equal(restartLearning.windowFor(restarts, 'steady', 'reacquire'), MINUTE, 'the least window');
+    assert.ok(restartLearning.windowFor(restarts, 'erratic', 'reacquire') > 1.5 * 300 * SECOND, 'its scatter widens it');
+    assert.equal(restartLearning.startupFor(restarts, 'steady'), 30 * SECOND + restartLearning.DEFAULT_STARTUP_MS);
+    // A path whose own departures after restarts last four minutes: so does its start-up.
+    let settles = [];
+    for (const ms of [230, 240, 250].map((s) => s * SECOND)) settles = restartLearning.noteSettle(settles, ms);
+    const startup = restartLearning.startupFor(restarts, 'steady', settles);
+    assert.ok(startup >= 30 * SECOND + 250 * SECOND && startup < 30 * SECOND + 10 * MINUTE, String(startup));
+    // A departure an hour long after a restart is a fault, not settling.
+    settles = restartLearning.noteSettle(settles, HOUR);
+    assert.equal(restartLearning.startupFor(restarts, 'steady', settles), startup);
+    // Another path of the source has nothing to settle.
+    assert.equal(restartLearning.startupFor(restarts, 'steady'), 30 * SECOND + restartLearning.DEFAULT_STARTUP_MS);
+  });
+});
+
+describe('review of 5d015da: what a restart teaches', () => {
+  // A number its name does not say is a code, a counter or a measurement.
+  const code = 'plugins.example.figure';
+  function restartEngine(engine, t, gapMs = 10 * SECOND) {
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    const next = newEngine({}, t + gapMs);
+    next.importState(saved, t + gapMs);
+    return { engine: next, t: t + gapMs };
+  }
+
+  it('does not take a restart\'s switches for the path going back to its states', () => {
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 2 * HOUR, 30 * SECOND, () => [[code, 5]]);
+    ({ engine, t } = restartEngine(engine, t));
+    // The plugin sends 0 until it has read, then its 5 again.
+    t = run(engine, t, t + MINUTE, 30 * SECOND, () => [[code, 0]]);
+    t = run(engine, t, t + 20 * MINUTE, 30 * SECOND, () => [[code, 5]]);
+    t = run(engine, t, t + 10 * MINUTE, 30 * SECOND, () => [[code, 7]]);
+    assert.deepEqual(opened(engine, 'newState').map((entry) => entry.path), [], 'a number taking new values is measuring');
+  });
+
+  it('reports a flag\'s first change made during the start-up, as it would outside it', () => {
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 2 * HOUR, 30 * SECOND, () => [[code, 0]]);
+    ({ engine, t } = restartEngine(engine, t));
+    t = run(engine, t, t + 30 * MINUTE, 30 * SECOND, () => [[code, 1]]);
+    assert.deepEqual(opened(engine, 'newState').map((entry) => entry.path), [code]);
+  });
+
+  it('counts only the climbing it watched toward a counter\'s day', () => {
+    const count = 'plugins.example.tally';
+    let engine = newEngine();
+    let value = 0;
+    let t = run(engine, T0, T0 + 2 * HOUR, 30 * SECOND, () => [[count, (value += 1)]]);
+    // Down for twenty-two hours: no day of climbing was seen.
+    ({ engine, t } = restartEngine(engine, t, 22 * HOUR));
+    t = run(engine, t, t + 10 * MINUTE, 30 * SECOND, () => [[count, (value += 1)]]);
+    const state = engine.exportState(t).paths.find((item) => item.path === count);
+    assert.ok(state.climbMs < 3 * HOUR, String(state.climbMs));
+    assert.equal(monitor.isCounterState(state), false);
+  });
+
+  it('keeps one observation per source per restart, and none from a path heard after a day', () => {
+    const restartLearning = require('../lib/watch/restarts.cjs');
+    const restarts = restartLearning.createRestarts();
+    restartLearning.note(restarts, 'bt', 'reacquire', 4 * MINUTE, T0);
+    for (let path = 0; path < 8; path += 1) restartLearning.note(restarts, 'bt', 'reacquire', 10 * SECOND + path, T0 + HOUR);
+    assert.deepEqual(restarts.sources.bt.reacquire, [4 * MINUTE, 10 * SECOND + 7], 'the slow restart before is kept');
+    assert.equal(restartLearning.summary(restarts)[0].restarts, 2);
+    restartLearning.note(restarts, 'bt', 'reacquire', 24 * HOUR, T0 + 2 * HOUR);
+    assert.equal(restarts.sources.bt.reacquire.length, 2, 'an outage is not the source\'s pace');
+    restartLearning.note(restarts, '__proto__', 'reacquire', MINUTE, T0);
+    const restored = restartLearning.importRestarts(JSON.parse(JSON.stringify(restarts)));
+    assert.deepEqual(restored.sources.__proto__.reacquire, [MINUTE]);
+    assert.equal(Object.getPrototypeOf({}).reacquire, undefined);
+  });
+});
+
+describe('watch learning: a path\'s own settling after restarts', () => {
+  it('still reports a fault just after a restart on a path whose source\'s link spikes at every restart', () => {
+    const rtt = 'networking.edgeLink.boat.rtt';
+    const voltage = 'electrical.batteries.house.voltage';
+    const rand = noise(91);
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[rtt, 0.05 + 0.002 * rand(), 'link'], [voltage, 12.9 + 0.02 * rand(), 'link']]);
+    const restart = () => {
+      const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+      t += 10 * SECOND;
+      engine = newEngine({}, t);
+      engine.importState(saved, t);
+    };
+    // The link's round-trip time is high for four minutes after every
+    // restart: past the default start-up the first time, which is news.
+    let first;
+    for (let index = 0; index < 4; index += 1) {
+      restart();
+      const start = t;
+      t = run(engine, t, t + 20 * MINUTE, SECOND, (now) => [[rtt, (now - start < 4 * MINUTE ? 0.4 : 0.05) + 0.002 * rand(), 'link'], [voltage, 12.9 + 0.02 * rand(), 'link']]);
+      if (index === 0) first = opened(engine, 'shift').length;
+    }
+    assert.equal(opened(engine, 'shift').length, first, 'its settling is learned, and not reported again');
+    const rttBefore = opened(engine, 'shift').filter((entry) => entry.path === rtt).length;
+    restart();
+    const start = t;
+    // The battery drops three minutes after the restart, while the link is still settling.
+    t = run(engine, t, t + 6 * MINUTE, SECOND, (now) => [
+      [rtt, (now - start < 4 * MINUTE ? 0.4 : 0.05) + 0.002 * rand(), 'link'],
+      [voltage, (now - start < 3 * MINUTE ? 12.9 : 11.2) + 0.02 * rand(), 'link']
+    ]);
+    const found = opened(engine, 'shift').filter((entry) => entry.path === voltage);
+    assert.ok(found.length === 1 && found[0].openedAt - start < 4 * MINUTE, JSON.stringify(opened(engine, 'shift')));
+    assert.equal(opened(engine, 'shift').filter((entry) => entry.path === rtt).length, rttBefore);
   });
 });

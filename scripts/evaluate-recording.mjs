@@ -115,7 +115,7 @@ async function survey(file, isExcluded) {
         if (isExcluded(entry.path)) continue;
         let item = paths.get(entry.path);
         if (!item) {
-          item = { path: entry.path, n: 0, changes: 0, rises: 0, gapSum: 0, last: undefined, lastAt: undefined, sample: [] };
+          item = { path: entry.path, n: 0, changes: 0, rises: 0, gapSum: 0, last: undefined, lastAt: undefined, sample: [], minutes: new Set() };
           paths.set(entry.path, item);
         }
         item.n += 1;
@@ -124,6 +124,8 @@ async function survey(file, isExcluded) {
         if (item.lastAt !== undefined) item.gapSum += record.t - item.lastAt;
         item.last = entry.value;
         item.lastAt = record.t;
+        // The minutes it was heard in: a fault is put only where it reads.
+        item.minutes.add(Math.floor(record.t / MINUTE));
         // A sample of the values, every 20th: enough for a median and a spread.
         if (item.n % 20 === 1 && item.sample.length < 2000) item.sample.push(entry.value);
       }
@@ -158,17 +160,39 @@ function chooseFaults(surveyed, args) {
   const to = surveyed.last - HOUR;
   const faults = [];
   if (to <= from || candidates.length === 0) return faults;
-  for (let index = 0; faults.length < args.faults && index < args.faults * 20; index += 1) {
-    const type = TYPES[faults.length % TYPES.length];
+  // A type no path can show (no path changes often enough to freeze) is
+  // given up after this many tries, and the others carry on.
+  const failures = new Map();
+  const unavailable = new Set();
+  for (let index = 0; faults.length < args.faults && index < args.faults * 50; index += 1) {
+    const types = TYPES.filter((name) => !unavailable.has(name));
+    if (types.length === 0) break;
+    const type = types[faults.length % types.length];
     const item = candidates[Math.floor(rand() * candidates.length)];
+    const reject = () => {
+      failures.set(type, (failures.get(type) || 0) + 1);
+      if (failures.get(type) >= 20 * candidates.length) unavailable.add(type);
+    };
     // A sensor that rarely changes cannot show a freeze; one that rarely
     // reports cannot show a dropout in a quarter of an hour.
-    if (type === 'freeze' && item.changeRatio < 0.3) continue;
-    if (item.counter && type !== 'dropout') continue;
-    if (type === 'dropout' && item.meanGap > 20000) continue;
+    if (type === 'freeze' && item.changeRatio < 0.3) { reject(); continue; }
+    if (item.counter && type !== 'dropout') { reject(); continue; }
+    if (type === 'dropout' && item.meanGap > 20000) { reject(); continue; }
+    // A path that never moved in the recording (a stopped engine's
+    // revolutions, a packet loss of zero all along) gives nothing to size a
+    // step or a drift by: a millionth of a unit would be a fault no sensor
+    // could show, and missing it says nothing of the watch.
+    if ((type === 'step' || type === 'drift') && !(item.spread > 0 || item.range > 0 || item.median !== 0)) { reject(); continue; }
     const durationMs = type === 'drift' ? 40 * MINUTE : type === 'freeze' ? 30 * MINUTE : type === 'dropout' ? 15 * MINUTE : 20 * MINUTE;
     const start = from + rand() * Math.max(0, to - from - durationMs);
     if (faults.some((fault) => fault.path === item.path && Math.abs(fault.start - start) < 2 * HOUR)) continue;
+    // Only where the path reads, most minutes of the fault: a fault in a
+    // stretch where it was silent anyway changes nothing, and would be
+    // counted missed (or, as a dropout, found for a silence of its own).
+    let heard = 0;
+    const minutes = Math.ceil(durationMs / MINUTE);
+    for (let minute = Math.floor(start / MINUTE); minute < Math.floor(start / MINUTE) + minutes; minute += 1) if (item.minutes.has(minute)) heard += 1;
+    if (heard < 0.5 * minutes) continue;
     const scale = Math.max(item.spread, 0.1 * item.range, 0.02 * Math.abs(item.median), 1e-6);
     const sign = rand() < 0.5 ? -1 : 1;
     faults.push({ id: faults.length + 1, type, path: item.path, start, end: start + durationMs, delta: sign * args.size * scale });
@@ -220,6 +244,7 @@ async function replay(args, surveyed, faults) {
         counter: monitor.isCounterState(state),
         relearning: t < state.relearnUntil,
         z: shift ? Number(shift.evidence.z.toFixed(2)) : undefined,
+        departure: shift && Number.isFinite(shift.evidence.departure) ? Number(shift.evidence.departure.toFixed(2)) : undefined,
         shiftActive: shift ? shift.active : undefined,
         habitLimit: shift && shift.evidence.usual ? Number((shift.evidence.usual.peakLimit || 0).toFixed(2)) : undefined,
         frozenActive: frozen ? frozen.active : undefined,
@@ -242,10 +267,23 @@ async function replay(args, surveyed, faults) {
       for (const finding of incident.findings) all.push(finding);
     }
   };
+  // The engine keeps a bounded history of incidents: what it found is
+  // collected as the replay goes, before the oldest are let go.
+  const COLLECT_TICKS = 120;
+  const advance = (upTo) => {
+    while (nextTick <= upTo) {
+      engine.tick(nextTick);
+      nextTick += 5000;
+      ticks += 1;
+      if (ticks % COLLECT_TICKS === 0) collect(engine, nextTick - 5000);
+    }
+  };
   let ticks = 0;
   for await (const record of records(args.recording)) {
     const t = record.t;
     if (record.event === 'close' && engine && closedAt === undefined) {
+      // The silence before the close is watched, as it was live.
+      advance(t);
       closedAt = t;
       saved = JSON.parse(JSON.stringify(engine.exportState(t)));
       collect(engine, t);
@@ -267,11 +305,7 @@ async function replay(args, surveyed, faults) {
       if (startState) engine.importState(startState, t);
       nextTick = t;
     }
-    while (nextTick <= t) {
-      engine.tick(nextTick);
-      nextTick += 5000;
-      ticks += 1;
-    }
+    advance(t);
     if (faults.length > 0) trace(engine, t);
     if (!isSelf(record.d, self)) continue;
     for (const update of record.d.updates) {

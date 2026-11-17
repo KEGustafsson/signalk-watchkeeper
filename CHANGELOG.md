@@ -18,14 +18,31 @@ on a boat's own recording.
   departures on another path far more often than chance - a binomial test
   against how often it changes at all - becomes that path's operating
   state: a watermaker, a generator or a plugin's own mode, with no name
-  needed. The named gates stay as priors and gain what is learned. Listed in
-  the inventory (`learnedStates`).
+  needed. How long the answer takes is not assumed: the test is made over
+  one, five and twenty minutes, the significance shared between them. The
+  named gates stay as priors and gain what is learned. Listed in the
+  inventory (`learnedStates`).
+- **How far a path's average usually strays is learned, and departures are
+  measured by it.** A departure was measured in the spread of the path's
+  readings; it is now measured by how far its last few seconds' average
+  strays from its baseline when nothing is happening - much less than the
+  readings' spread for a sensor whose noise averages away, about the same
+  for one whose readings wander together. Steps and drifts that hide in a
+  noisy sensor's scatter are found; a slowly wandering one is not reported
+  for its wandering. The finding still gives the size in the readings'
+  spread, and says how far its average usually stays when that is much
+  less. A saved path is judged as before until its yardstick has learned;
+  habits are kept as before.
 - **How each source comes back after a restart is learned**: how long its
-  paths take to be heard again, and its state paths to come back from their
-  detour, over its last 8 restarts. Each path's start-up, reacquiring and
-  detour, and how long carried findings wait, follow from it; the fixed
-  windows are only the defaults until then. Listed in the inventory
-  (`restarts`).
+  paths take to be heard again and its state paths to come back from their
+  detour - one observation per restart, the last 8 kept, each fitted as the
+  habits are, so a source that always takes ten seconds is given little
+  more and an erratic one well more - and how long each path's own
+  departures after a restart take to settle (a link's round-trip time while
+  it reconnects), so its start-up allows for them and its source's other
+  paths' does not. Each path's start-up, reacquiring and detour, and how
+  long carried findings wait, follow from it; the fixed windows are only the
+  defaults until then. Listed in the inventory (`restarts`).
 - **Habits of level changes**: a departure accepted as the new normal (a
   daily figure stepping at midnight, a setpoint moved) is kept as a habit,
   so its next steps of that size are routine.
@@ -50,12 +67,32 @@ on a boat's own recording.
   as a state code, or once it has gone back to a value it had before.
 - `**.*Yesterday` is no longer a default exclusion: such figures are learned
   as habits of level changes.
+- A departure's text gives its last few seconds' average, with the last
+  reading beside it, when the two disagree: "high" is no longer said of a
+  last reading that is already back below its usual.
 
 ### Fixed
 
 - A baseline is no longer filed under an operating state while the path is
   in the middle of a departure; filed then, the state's own level came back
   as a departure every time the state did.
+- A path heard again only long after a restart (a connection unplugged for
+  a day), or one that reports only now and then, no longer widens its whole
+  source's window after restarts (CodeRabbit's review of 5d015da).
+- A restart's own switches (a plugin sending 0 until it has read, then its
+  5 again) are not taken for the path going back to its states, and a
+  first change made during the start-up is reported as it would be outside
+  it (CodeRabbit's review of 5d015da).
+- A counter's day of climbing counts only the time it was watched climbing,
+  not the hours the plugin was down (CodeRabbit's review of 5d015da).
+- A source or path named `__proto__` is kept as any other
+  (CodeRabbit's review of 5d015da).
+- One path changing every second no longer fills the operating-state
+  learning's memory of recent changes: each path's latest change is kept.
+- The evaluation script collects findings as it goes, watches the silence
+  before a recorded restart, puts faults only where their path reads, and
+  carries on when one kind of fault fits no path
+  (CodeRabbit's review of 5d015da).
 
 ## [0.2.0]
 
