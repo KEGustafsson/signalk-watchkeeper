@@ -56,6 +56,33 @@ off before reaching them.
   as the panel's tooltip and under its trend), and `name`, `system`, `part`,
   `kind`, `brief` and, for a dropout, `since` (when the data stopped).
 
+### Fixed
+
+- **An incident is named and rated by what is still open.** It was named
+  after its first finding and kept the worst severity it ever had, so a
+  day-old incident whose alerts cleared within the hour still read *Alert:
+  Navigation under keel state switching unusually often (+17 related)*.
+  While active it is now named after its earliest finding that is still open
+  (or the one that reopened it, while that is open) and rated by the worst
+  open finding: the same incident reads *Under-keel clearance sending no data
+  (+N related)*, as a warning. A resolved incident keeps the name it
+  had last and is shown at the worst it reached, now kept as `peakSeverity`;
+  the watch report counts an incident that reached alert as an alert. The
+  notifications on `notifications.watchkeeper.*` already followed each path's
+  open findings, and still do.
+- **An incident no longer takes in everything while it stays open.** A finding
+  joined an active incident if its system had ever had a finding in it, or
+  within 3 minutes of the incident's last new finding, so two sensors with no
+  value held one incident open for 22 hours and took in a vision system's
+  frame rate an hour later and the Nano's disk, memory and CPU temperature
+  over the night and day after. A finding now joins by timing only while the
+  incident is forming - within 3 minutes of its last new finding, and no later
+  than 10 minutes after it opened, so a cascade still forms one incident - and
+  by system only while that system still has an open finding in the
+  incident, which it then joins before any other. GNSS findings still group
+  only with GNSS findings. Saved incidents load as before; an active one
+  carried over a restart is renamed and rated by what is open.
+
 ## [0.2.0]
 
 The watch now learns from each path's own history, beyond its baseline. On a

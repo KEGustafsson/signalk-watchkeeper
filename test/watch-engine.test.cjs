@@ -1689,3 +1689,293 @@ describe('review of 8733f3c: the primary source of a path the watch does not bas
     assert.ok(at !== undefined && at - back <= 15 * SECOND, `back to bmv after ${at === undefined ? 'more than 2 min' : `${(at - back) / SECOND} s`}`);
   });
 });
+
+describe('incidents: what is still open names and rates them, and nothing chains on for hours', () => {
+  const T = Date.parse('2026-06-01T20:25:00Z');
+  const OPEN = Infinity;
+  // Every path below is excluded from the statistical watch, so only these
+  // watches - with their own severities and open spells - make findings.
+  const EXCLUDE = ['navigation.underKeel', 'control', 'vision', 'steering', 'environment.nano', 'electrical.victron'];
+
+  /**
+   * The owner's incident, from the panel: spells in minutes after 20:25.
+   * `level` is the value while on: above 0.5 is the watch, or below -0.5.
+   */
+  const OWNER = [
+    // 20:25, at once; all cleared by 22:34.
+    { id: 'r-keel-cycling', path: 'navigation.underKeel.stateCycling', severity: 'alert', on: [[0, 20], [1321, OPEN]] },
+    { id: 'r-rc-state', path: 'control.remoteController.state', severity: 'warn', on: [[0, 35]] },
+    { id: 'r-rc-link', path: 'control.remoteController.linkState', severity: 'warn', on: [[0, 50]] },
+    { id: 'r-vision-attitude', path: 'vision.system.attitudeCompensatedState', severity: 'warn', on: [[0, 40]] },
+    { id: 'r-hh-gnss', path: 'steering.headingHold.gnssValid', severity: 'warn', on: [[0, 60]] },
+    { id: 'r-nano-mem-high', path: 'environment.nano.memoryUtilisation', severity: 'warn', on: [[0, 90]] },
+    { id: 'r-dcdc-low', path: 'electrical.victron.dcdcVoltage', severity: 'alert', on: [[0, 129]] },
+    // 20:27: no value, for the rest of the day.
+    { id: 'r-keel-clearance', path: 'navigation.underKeel.clearance', severity: 'warn', on: [[2, OPEN]] },
+    { id: 'r-keel-escape', path: 'navigation.underKeel.escapeHeading', severity: 'warn', on: [[2, OPEN]] },
+    // 21:32, and the night and day after.
+    { id: 'r-vision-fps', path: 'vision.system.inferenceFps', severity: 'warn', on: [[67, 85]] },
+    { id: 'r-nano-sd', path: 'environment.nano.sdUtilisation', severity: 'warn', on: [[240, 301]] },
+    { id: 'r-nano-mem-low', path: 'environment.nano.memoryUtilisation', severity: 'warn', level: -1, on: [[580, 642]] },
+    { id: 'r-nano-cpu', path: 'environment.nano.cpuTemperature', severity: 'warn', on: [[880, 897], [1215, 1248], [1300, OPEN]] },
+    // ~18:2x: a new value and the cycling again on the under-keel system,
+    // and the remote controller cycling with them.
+    { id: 'r-keel-state', path: 'navigation.underKeel.stateUnknown', severity: 'warn', on: [[1320, OPEN]] },
+    { id: 'r-rc-hh-live', path: 'control.remoteController.hhLive', severity: 'warn', on: [[1321, OPEN]] }
+  ];
+
+  function ownerEngine(watches, now = T) {
+    const engine = createWatchEngine(normalizeWatchConfig({ watchEnabled: true, watchLearningMinutes: 20, watchExcludePaths: EXCLUDE }), { now });
+    engine.setRules(
+      watches.map((item) => ({
+        id: item.id,
+        path: item.path,
+        op: (item.level ?? 1) > 0 ? 'above' : 'below',
+        value: (item.level ?? 1) > 0 ? 0.5 : -0.5,
+        forSeconds: 0,
+        severity: item.severity,
+        source: 'manual'
+      }))
+    );
+    return engine;
+  }
+
+  /** Feed the watches' paths every 30 s from `from` to `to` (minutes after 20:25), calling `at[minute]` on the way. */
+  function play(engine, watches, from, to, at = {}) {
+    const byPath = new Map();
+    for (const item of watches) byPath.set(item.path, [...(byPath.get(item.path) || []), item]);
+    for (let t = T + from * MINUTE; t <= T + to * MINUTE; t += 30 * SECOND) {
+      const minute = (t - T) / MINUTE;
+      for (const [path, items] of byPath) {
+        const on = items.find((item) => item.on.some(([a, b]) => minute >= a && minute < b));
+        engine.ingest(path, on ? on.level ?? 1 : 0, t);
+      }
+      engine.tick(t);
+      if (at[minute]) at[minute](engine, t);
+    }
+  }
+
+  const titleOf = (engine, id) => {
+    const entry = engine.status().incidents.flatMap((incident) => incident.findings).find((item) => item.key === `rule:${id}`);
+    return entry && entry.title;
+  };
+  /** The incident holding watch `id`'s finding - the one opened in the minute after `minute`, if given. */
+  const incidentWith = (engine, id, minute) =>
+    engine
+      .status()
+      .incidents.find((incident) =>
+        incident.findings.some(
+          (entry) => entry.key === `rule:${id}` && (minute === undefined || (entry.openedAt >= T + minute * MINUTE && entry.openedAt <= T + (minute + 1) * MINUTE))
+        )
+      );
+
+  it("keeps the owner's 20:25 incident to its burst and the systems still open in it", () => {
+    const engine = ownerEngine(OWNER);
+    const checks = [];
+    play(engine, OWNER, 0, 1340, {
+      // 20:30: the burst and the two "no value" findings are one incident, an alert.
+      5: (e) => {
+        const active = e.status().incidents.filter((incident) => incident.status === 'active');
+        assert.equal(active.length, 1, active.map((incident) => incident.title).join(' | '));
+        assert.equal(active[0].findings.length, 9);
+        assert.equal(active[0].severity, 'alert');
+        assert.equal(active[0].title, `${titleOf(e, 'r-keel-cycling')} (+8 related)`);
+        checks.push(5);
+      },
+      // 22:40: the burst has cleared. What is still wrong is two warnings.
+      135: (e) => {
+        const [incident] = e.status().incidents.filter((item) => item.status === 'active');
+        assert.equal(incident.title, `${titleOf(e, 'r-keel-clearance')} (+8 related)`);
+        assert.equal(incident.severity, 'warn');
+        assert.equal(incident.peakSeverity, 'alert');
+        // ...and nothing the boat's displays show is an alert any more.
+        const states = [...e.notificationStates().values()].map((state) => state.state);
+        assert.deepEqual(states, ['warn', 'warn']);
+        checks.push(135);
+      },
+      // 18:15, the next evening: still those two warnings, and none of the
+      // night's findings has joined it.
+      1310: (e) => {
+        const incident = incidentWith(e, 'r-keel-clearance');
+        assert.equal(incident.status, 'active');
+        assert.equal(incident.findings.length, 9);
+        assert.equal(incident.title, `${titleOf(e, 'r-keel-clearance')} (+8 related)`);
+        assert.equal(incident.severity, 'warn');
+        checks.push(1310);
+      }
+    });
+    assert.deepEqual(checks, [5, 135, 1310]);
+
+    const first = incidentWith(engine, 'r-keel-clearance');
+    assert.equal(first.status, 'active');
+    // The burst, the nulls, and the two later findings on the under-keel
+    // system, which still had open findings in it at 18:2x.
+    assert.deepEqual(
+      first.findings.map((entry) => entry.key.slice(5)),
+      [
+        'r-keel-cycling',
+        'r-rc-state',
+        'r-rc-link',
+        'r-vision-attitude',
+        'r-hh-gnss',
+        'r-nano-mem-high',
+        'r-dcdc-low',
+        'r-keel-clearance',
+        'r-keel-escape',
+        'r-keel-state',
+        'r-keel-cycling'
+      ]
+    );
+    // Still named by the earliest open finding; an alert again, now that the
+    // under-keel state is cycling hard again.
+    assert.equal(first.title, `${titleOf(engine, 'r-keel-clearance')} (+10 related)`);
+    assert.equal(first.severity, 'alert');
+
+    // Each later finding on a system whose findings there had all cleared
+    // is an incident of its own: vision.system at 21:32, environment.nano
+    // at 00:25, ~06:00, 11:05, 16:40 and 18:05, and the remote controller
+    // at 18:21 (its burst-time findings long cleared, and the 18:05
+    // incident no longer forming).
+    const own = [
+      ['r-vision-fps', 67],
+      ['r-nano-sd', 240],
+      ['r-nano-mem-low', 580],
+      ['r-nano-cpu', 880],
+      ['r-nano-cpu', 1215],
+      ['r-nano-cpu', 1300],
+      ['r-rc-hh-live', 1321]
+    ].map(([id, minute]) => incidentWith(engine, id, minute));
+    for (const incident of own) {
+      assert.notEqual(incident.id, first.id, incident.title);
+      assert.equal(incident.findings.length, 1, incident.title);
+    }
+    assert.equal(new Set(own.map((incident) => incident.id)).size, own.length);
+    assert.equal(engine.status().incidents.length, 1 + own.length);
+    assert.deepEqual(
+      own.map((incident) => incident.status),
+      ['resolved', 'resolved', 'resolved', 'resolved', 'resolved', 'active', 'active']
+    );
+  });
+
+  it('keeps a cascade over a few minutes as one incident, and nothing past its first 10 minutes', () => {
+    const watches = [
+      { id: 'r-alternator', path: 'electrical.alternators.main.voltage', severity: 'warn', on: [[0, OPEN]] },
+      { id: 'r-house', path: 'electrical.batteries.house.voltage', severity: 'warn', on: [[1, OPEN]] },
+      { id: 'r-engine-temp', path: 'propulsion.main.temperature', severity: 'alert', on: [[2, OPEN]] },
+      { id: 'r-fridge', path: 'environment.inside.refrigerator.temperature', severity: 'warn', on: [[4.5, OPEN]] },
+      // Later, still within 3 minutes of the last new finding, but past the
+      // incident's first 10 minutes: a fresh incident.
+      { id: 'r-water', path: 'tanks.freshWater.0.currentLevel', severity: 'warn', on: [[6.5, OPEN]] },
+      { id: 'r-bilge', path: 'environment.bilge.level', severity: 'warn', on: [[8.5, OPEN]] },
+      { id: 'r-wind', path: 'environment.wind.speedApparent', severity: 'warn', on: [[11, OPEN]] }
+    ];
+    const engine = createWatchEngine(normalizeWatchConfig({ watchEnabled: true, watchLearningMinutes: 20, watchExcludePaths: ['electrical', 'propulsion', 'environment', 'tanks'] }), { now: T });
+    engine.setRules(watches.map((item) => ({ id: item.id, path: item.path, op: 'above', value: 0.5, forSeconds: 0, severity: item.severity, source: 'manual' })));
+    play(engine, watches, 0, 15);
+    const incidents = engine.status().incidents;
+    const cascade = incidentWith(engine, 'r-alternator');
+    assert.deepEqual(
+      cascade.findings.map((entry) => entry.key.slice(5)),
+      ['r-alternator', 'r-house', 'r-engine-temp', 'r-fridge', 'r-water', 'r-bilge']
+    );
+    assert.equal(cascade.severity, 'alert');
+    assert.notEqual(incidentWith(engine, 'r-wind').id, cascade.id);
+    assert.equal(incidents.length, 2);
+  });
+
+  it('reopens an incident older than 10 minutes when a finding opens in the tick it resolved', () => {
+    // A cascade that keeps joining for 10 minutes, all of it clearing at
+    // minute 11 as the bilge finding opens: the bilge reopens the cascade.
+    const watches = [
+      { id: 'r-alternator', path: 'electrical.alternators.main.voltage', severity: 'warn', on: [[0, 11]] },
+      { id: 'r-house', path: 'electrical.batteries.house.voltage', severity: 'warn', on: [[2.5, 11]] },
+      { id: 'r-engine-temp', path: 'propulsion.main.temperature', severity: 'warn', on: [[5, 11]] },
+      { id: 'r-water', path: 'tanks.freshWater.0.currentLevel', severity: 'warn', on: [[7.5, 11]] },
+      { id: 'r-fridge', path: 'environment.inside.refrigerator.temperature', severity: 'warn', on: [[9.5, 11]] },
+      { id: 'r-bilge', path: 'environment.bilge.level', severity: 'warn', on: [[11, OPEN]] }
+    ];
+    const engine = createWatchEngine(normalizeWatchConfig({ watchEnabled: true, watchLearningMinutes: 20, watchExcludePaths: ['electrical', 'propulsion', 'environment', 'tanks'] }), { now: T });
+    engine.setRules(watches.map((item) => ({ id: item.id, path: item.path, op: 'above', value: 0.5, forSeconds: 0, severity: item.severity, source: 'manual' })));
+    play(engine, watches, 0, 13);
+    const cascade = incidentWith(engine, 'r-alternator');
+    assert.deepEqual(
+      cascade.findings.map((entry) => entry.key.slice(5)),
+      ['r-alternator', 'r-house', 'r-engine-temp', 'r-water', 'r-fridge', 'r-bilge']
+    );
+    assert.equal(cascade.status, 'active');
+    assert.equal(engine.status().incidents.length, 1);
+  });
+
+  it('takes a same-system finding into the incident while that system has an open finding in it', () => {
+    const watches = [
+      { id: 'r-coolant', path: 'propulsion.main.coolantTemperature', severity: 'warn', on: [[0, 90]] },
+      { id: 'r-solar', path: 'electrical.solar.panel.current', severity: 'warn', on: [[1, 100]] },
+      { id: 'r-oil', path: 'propulsion.main.oilPressure', severity: 'alert', on: [[60, 70]] },
+      // Once the main engine's findings have all cleared, the incident is
+      // only still open for the solar panel: the engine's next is new.
+      { id: 'r-exhaust', path: 'propulsion.main.exhaustTemperature', severity: 'warn', on: [[96, 110]] }
+    ];
+    const engine = createWatchEngine(normalizeWatchConfig({ watchEnabled: true, watchLearningMinutes: 20, watchExcludePaths: ['propulsion', 'electrical'] }), { now: T });
+    engine.setRules(watches.map((item) => ({ id: item.id, path: item.path, op: 'above', value: 0.5, forSeconds: 0, severity: item.severity, source: 'manual' })));
+    const checks = [];
+    play(engine, watches, 0, 140, {
+      65: (e) => {
+        const incident = incidentWith(e, 'r-oil');
+        assert.equal(incident.id, incidentWith(e, 'r-coolant').id, 'an hour on, joined by its system');
+        // Named by its earliest open finding, rated by the worst open one.
+        assert.equal(incident.title, `${titleOf(e, 'r-coolant')} (+2 related)`);
+        assert.equal(incident.severity, 'alert');
+        checks.push(65);
+      },
+      75: (e) => {
+        assert.equal(incidentWith(e, 'r-coolant').severity, 'warn', 'the alert cleared');
+        checks.push(75);
+      },
+      95: (e) => {
+        const incident = incidentWith(e, 'r-coolant');
+        assert.equal(incident.status, 'active');
+        assert.equal(incident.title, `${titleOf(e, 'r-solar')} (+2 related)`);
+        checks.push(95);
+      }
+    });
+    assert.deepEqual(checks, [65, 75, 95]);
+    const first = incidentWith(engine, 'r-coolant');
+    assert.equal(first.status, 'resolved');
+    // Resolved: the name it had last, at the worst it reached.
+    assert.equal(first.title, `${titleOf(engine, 'r-solar')} (+2 related)`);
+    assert.equal(first.severity, 'alert');
+    assert.notEqual(incidentWith(engine, 'r-exhaust').id, first.id);
+    assert.equal(engine.status().incidents.length, 2);
+  });
+
+  it('keeps the incident across a restart, older saves included, and groups after it as before', () => {
+    const engine = ownerEngine(OWNER);
+    play(engine, OWNER, 0, 135);
+    const saved = JSON.parse(JSON.stringify(engine.exportState(T + 135 * MINUTE)));
+    // A save from before the incident kept these: its title and severity
+    // then were its first finding's and its worst.
+    const old = JSON.parse(JSON.stringify(saved));
+    for (const incident of old.incidents) {
+      delete incident.peakSeverity;
+      delete incident.namedBy;
+      incident.severity = 'alert';
+      incident.title = `${titleOf(engine, 'r-keel-cycling')} (+8 related)`;
+    }
+    for (const state of [saved, old]) {
+      const back = T + 140 * MINUTE;
+      const restored = ownerEngine(OWNER, back);
+      assert.equal(restored.importState(JSON.parse(JSON.stringify(state)), back), true);
+      const incident = incidentWith(restored, 'r-keel-clearance');
+      assert.equal(incident.status, 'active');
+      assert.equal(incident.title, `${titleOf(restored, 'r-keel-clearance')} (+8 related)`);
+      assert.equal(incident.severity, 'warn');
+      assert.equal(incident.peakSeverity, 'alert');
+      play(restored, OWNER, 140, 300);
+      const kept = incidentWith(restored, 'r-keel-clearance');
+      assert.equal(kept.id, incident.id, 'the same incident');
+      assert.equal(kept.status, 'active');
+      assert.equal(kept.findings.length, 9);
+      assert.notEqual(incidentWith(restored, 'r-nano-sd').id, kept.id);
+    }
+  });
+});

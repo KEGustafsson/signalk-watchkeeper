@@ -459,13 +459,34 @@ A check's condition passes through a tracker that applies its persistence
 be gone before the finding clears). An open finding can rise in severity but
 does not drop back.
 
-**Incidents** group findings. A new finding joins an active incident if it is
-in the same system (the first two path segments, for example
-`propulsion.main`), or if it starts within 3 minutes of the incident's last new
-finding. GNSS findings only ever group with GNSS findings. Findings are kept
-in the order they started. An
-incident is named after its first finding, or, once it resolved and a
-finding that opened in the same tick reopened it, after that finding. An
+**Incidents** group findings. A new finding joins an active incident:
+
+- **by system**, while the incident still has an open finding in the same
+  system (the first two path segments, for example `propulsion.main`). A
+  system whose findings in it have all cleared is not held to it: its next
+  finding is a new incident. A finding joins its own system's incident before
+  any other.
+- **by timing**, while the incident is forming: within 3 minutes of the
+  incident's last new finding, and no later than 10 minutes after it opened.
+  A cascade (an alternator failing, the battery voltage falling, the engine
+  overheating) is one incident; an incident held open for a day by a sensor
+  with no value does not take in whatever happens meanwhile.
+
+GNSS findings only ever group with GNSS findings. A finding that opens in the
+tick an incident resolved reopens it, by system or by the 3-minute gap
+alone, whatever its age (a finding that cleared in that tick counts as still
+open), and the incident is then named after it while it is
+open. Findings are kept in the order they started.
+
+While an incident is active it is named after its earliest finding that is
+still open, and its `severity` is the worst among its open findings: an
+incident whose alerts have cleared and that is left with warnings is a
+warning, in the panel and in its title. Once every finding has cleared it is
+resolved, keeps the name it had last, and is shown at the worst severity it
+reached, which is also kept as `peakSeverity` (the watch report counts an
+incident that reached `alert` as an alert). Incidents saved by an earlier
+version load as they were; an active one carried over a restart is renamed
+and rated by what is open. An
 incident keeps at most 50 findings: past that its oldest cleared ones are
 dropped, its title (*… (+N related)*) still counts them, and the incident
 carries their number as `omitted`, which the panel and the copied incident text
@@ -552,7 +573,9 @@ Earlier – all back to normal
   *Earlier – all back to normal*, bounded to about 1,800 characters.
 
 **Notifications.** Each watched path gets one notification carrying its worst
-open finding, plus one each for GNSS, the data feed and each rule:
+open finding, plus one each for GNSS, the data feed and each rule. Incidents
+have none of their own: a path whose alert cleared publishes `normal` even
+while the incident it was in stays open for another finding.
 
 ```
 notifications.watchkeeper.<path>
