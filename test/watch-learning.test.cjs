@@ -1524,4 +1524,62 @@ describe('watch learning: a path\'s own settling after restarts', () => {
     assert.equal(after.length, 6, JSON.stringify(after));
     assert.ok(after[5] >= first + 45 * SECOND && after[5] <= first + 75 * SECOND, JSON.stringify(after));
   });
+
+  it('keeps a restart\'s departure that dips under on the start-up\'s last tick and is back on the next', () => {
+    const rtt = 'networking.edgeLink.boat.rtt';
+    const { detectorOptions } = require('../lib/watch/engine.cjs');
+    const options = detectorOptions(normalizeWatchConfig({ watchEnabled: true, watchLearningMinutes: 20 }));
+    const rand = noise(29);
+    const engine = newEngine();
+    const t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[rtt, 0.05 + 0.002 * rand()]]);
+    const learned = () => monitor.importPathState(JSON.parse(JSON.stringify(engine.exportState(t).paths.find((item) => item.path === rtt))), t);
+    const away = (state, departure) => {
+      state.fast = state.mean + departure * Math.max(Math.sqrt(state.devVar), monitor.noiseFloor(state));
+    };
+    const tick = (state, at, departure) => {
+      away(state, departure);
+      monitor.learnFromTick(state, at, options);
+    };
+    // Ticks every 5 s; the start-up is over at t + 10 s.
+    const hovering = learned();
+    hovering.startupUntil = t + 10 * SECOND;
+    tick(hovering, t, 10);
+    tick(hovering, t + 5 * SECOND, 0);
+    tick(hovering, t + 10 * SECOND, 10);
+    assert.equal(hovering.startupSettledAt, undefined, 'back at once: not settled yet');
+    tick(hovering, t + 15 * SECOND, 0);
+    assert.equal(hovering.startupSettledAt, t + 15 * SECOND);
+    // Over a tick before the start-up's last: a departure now is the path's own.
+    const over = learned();
+    over.startupUntil = t + 15 * SECOND;
+    tick(over, t, 10);
+    tick(over, t + 5 * SECOND, 0);
+    tick(over, t + 10 * SECOND, 0);
+    tick(over, t + 15 * SECOND, 10);
+    assert.equal(over.startupSettledAt, t + 5 * SECOND);
+    assert.ok(habits.isOpen(over, 'shift+'), 'followed as one of its own departures');
+  });
+
+  it('does not take a new departure just after the start-up for the restart\'s, ended a minute before', () => {
+    const rtt = 'networking.edgeLink.boat.rtt';
+    const restartLearning = require('../lib/watch/restarts.cjs');
+    const rand = noise(23);
+    let engine = newEngine();
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[rtt, 0.05 + 0.002 * rand()]]);
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    t += 10 * SECOND;
+    engine = newEngine({}, t);
+    engine.importState(saved, t);
+    const start = t;
+    const startup = restartLearning.startupFor(engine.exportState(t).restarts, 'default', undefined);
+    // Ticks fall every 5 s from the restart: the first one after the start-up.
+    const after = start + Math.ceil(startup / (5 * SECOND)) * 5 * SECOND;
+    // High for 20 s, settled well before the start-up ends, and high again
+    // just after its last tick, for half a minute.
+    const high = (now) => now - start < 20 * SECOND || (now >= after - 4 * SECOND && now < after + 30 * SECOND);
+    t = run(engine, t, t + 15 * MINUTE, SECOND, (now) => [[rtt, (high(now) ? 0.4 : 0.05) + 0.002 * rand()]]);
+    const settles = engine.exportState(t).paths.find((item) => item.path === rtt).restartSettles || [];
+    assert.equal(settles.length, 1, JSON.stringify(settles));
+    assert.ok(settles[0] < after - start - 20 * SECOND, `the restart's own, not the one after: ${JSON.stringify(settles)}, start-up ${startup}`);
+  });
 });
