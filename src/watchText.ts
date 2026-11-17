@@ -27,7 +27,10 @@ export interface WatchIncident {
   readonly updatedAt: number;
   readonly resolvedAt?: number;
   readonly interrupted?: boolean;
+  /** The worst still open while active; once resolved, the worst it reached. */
   readonly severity: WatchSeverity;
+  /** The worst it reached (absent from incidents saved by earlier versions). */
+  readonly peakSeverity?: WatchSeverity;
   readonly title: string;
   readonly findings: readonly WatchFinding[];
   /** Earlier cleared findings dropped to keep the incident bounded. */
