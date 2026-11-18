@@ -72,6 +72,57 @@ on a boat's own recording.
   reading beside it, when the two disagree: "high" is no longer said of a
   last reading that is already back below its usual.
 
+Incidents read the way an owner would say them. On a real incident of 18
+findings over a day the panel showed every finding in the order it started,
+in the detectors' words ("Electrical victron dcdc voltage in unusually low —
+13.30 V, −0.54 V from its usual 13.84 V (10.8× its normal variation)"), with
+the three that still needed attention at the bottom; the copied text was cut
+off before reaching them.
+
+### Changed
+
+- **The panel puts what needs attention first.** An incident shows *Needs
+  attention now* - its open findings, the most severe first, each with since
+  when and for how long - then *Earlier – all back to normal*, one short line
+  each with the time it started and when it was normal again. More than six
+  earlier lines show five and *Show all*. **Trend**, **Mute 1 h** and **Not
+  useful** are only on open findings. The headline is the incident's title as
+  the engine sets it, or *All back to normal at HH:MM* once it has resolved
+  (*Closed by a plugin restart at HH:MM* when a restart closed it, with its
+  findings still open then said to be so); recent incidents open to the same
+  view.
+- **Findings that started together share a line.** State switching on
+  several systems in the same minute reads *Several systems switched state at
+  once (under-keel, remote controller, vision, heading hold)*; no data from
+  several readings of one sensor reads *Under-keel sensor sending no data –
+  Clearance and escape heading are empty*. Each finding is a click away.
+- **Plain wording** in the panel, the copied incident and the Signal K
+  notifications: *Victron DC-DC input voltage lower than usual: 13.3 V,
+  usually 13.8 V – far outside its normal range*; *Nano memory use higher than
+  usual: 87 %, usually 72 %*; *Under-keel clearance sending no data*; *Under-keel
+  state now reads "unknown": Before only "alarm" or "off"*; *4 switches in the
+  last hour, normally under 1 an hour*. How far out a level is is said in
+  words (a little, clearly, far) instead of "N× its normal variation", and a
+  rate of change only while the reading is still moving away from normal.
+- **Numbers rounded to what matters**: at most two decimals, voltages in
+  tenths, temperatures whole or in tenths, and a ratio - Signal K units
+  `ratio`, or a `…Utilisation`, `…Ratio` or `…Fraction` leaf whose values are
+  all 0..1 - as a percentage, with a decimal more wherever rounding would
+  make two different numbers read the same.
+- **Names.** Without a `meta.displayName`, a path's name drops the Signal K
+  branch in front of it when two words are left (*Speed over ground*), spells
+  out abbreviations whose meaning is not in doubt (DC-DC, CPU, SD card, GNSS,
+  frames/s, AC, DC, NMEA, AIS, GPS, …), reads a trailing `in`/`out` after a
+  quantity as input/output (*Victron DC-DC input voltage*), and says a
+  repeated word once (*Main inverter mode*). Unknown tokens stay as they are.
+- **Copy as text** gives the panel's lines under the same two headings.
+
+### Added
+
+- Each finding carries `detail`, the exact figures it was measured as (shown
+  as the panel's tooltip and under its trend), and `name`, `system`, `part`,
+  `kind`, `brief` and, for a dropout, `since` (when the data stopped).
+
 ### Fixed
 
 - **An incident is named and rated by what is still open.** It was named
@@ -80,8 +131,8 @@ on a boat's own recording.
   Navigation under keel state switching unusually often (+17 related)*.
   While active it is now named after its earliest finding that is still open
   (or the one that reopened it, while that is open) and rated by the worst
-  open finding: the same incident reads *Navigation under keel clearance has
-  no value (+N related)*, as a warning. A resolved incident keeps the name it
+  open finding: the same incident reads *Under-keel clearance sending no data
+  (+N related)*, as a warning. A resolved incident keeps the name it
   had last and is shown at the worst it reached, now kept as `peakSeverity`;
   the watch report counts an incident that reached alert as an alert. The
   notifications on `notifications.watchkeeper.*` already followed each path's

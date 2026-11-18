@@ -173,7 +173,8 @@ describe('watch service', () => {
     assert.equal(raised[0].state, 'alert');
     assert.deepEqual(raised[0].method, ['visual']);
     // The display name and units came from the path's own metadata.
-    assert.match(raised[0].message, /^Engine temp unusually high: 9\d\.\d °C/);
+    assert.match(raised[0].message, /^Engine temp higher than usual: 9\d °C, usually 8\d °C – /);
+    assert.doesNotMatch(raised[0].message, /normal variation/);
     assert.equal(host.messages[0].id, 'signalk-watchkeeper');
 
     const status = service.status();
@@ -267,7 +268,7 @@ describe('watch service', () => {
     assert.equal(result.pathsReplayed, 2);
     assert.ok(result.findingsOpened >= 1);
     assert.ok(result.byDetector.shift >= 1);
-    assert.match(result.incidents[0].title, /temperature unusually high/);
+    assert.match(result.incidents[0].title, /temperature higher than usual/);
     assert.ok(requests.some((url) => url.includes('/signalk/v2/api/history/values')));
     service.stop();
   });

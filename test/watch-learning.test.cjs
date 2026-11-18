@@ -96,7 +96,8 @@ describe('watch learning: departures a path keeps coming back from', () => {
     t = run(engine, t, start + 50 * SECOND, 5 * SECOND, spike(start, 0.6));
     const finding = engine.status().activeFindings.find((item) => item.detector === 'shift');
     assert.ok(finding, 'six times the usual loss is news');
-    assert.match(finding.message, /such rises in the past/);
+    assert.match(finding.message, /It has risen like this \d+ times in the past \d+ h, for up to \d+ min each; this one is clearly bigger$/);
+    assert.match(finding.detail, /such rises in the past/);
   });
 
   it('still reports a spike of the usual size that lasts far longer than usual', () => {
@@ -179,7 +180,9 @@ describe('watch learning: how long a path holds one value', () => {
     assert.deepEqual(opened(engine, 'frozen'), []);
     t = run(engine, t, t + 8 * MINUTE, 10 * SECOND, () => [[rpm, 30], [path, 353.2]]);
     assert.ok(detectors(engine).includes(`frozen:${path}`), 'what it does when stopped does not excuse a freeze while running');
-    assert.match(engine.status().activeFindings.find((item) => item.detector === 'frozen').message, /normally holds a value for \d+ s at most/);
+    const frozen = engine.status().activeFindings.find((item) => item.detector === 'frozen');
+    assert.match(frozen.message, /^Showing 80\.\d °C unchanged for \d+ min \(\d+ updates\); normally it changes within \d+ s$/);
+    assert.match(frozen.detail, /normally holds a value for \d+ s at most/);
   });
 
   it('does not call a slow sensor stuck from an evening of watching it', () => {
@@ -483,8 +486,8 @@ describe('watch learning: null is "no value"', () => {
     t = run(engine, t, t + 5 * MINUTE, 10 * SECOND, () => [[path, null]]);
     const finding = engine.status().activeFindings.find((item) => item.detector === 'dropout');
     assert.ok(finding, detectors(engine).join(', '));
-    assert.match(finding.title, /has no value/);
-    assert.match(finding.message, /null/);
+    assert.match(finding.title, /^Bedroom temperature sending no data$/);
+    assert.match(finding.detail, /null/);
     run(engine, t, t + MINUTE, 10 * SECOND, () => [[path, 293 + 0.2 * rand()]]);
     assert.ok(!detectors(engine).includes(`dropout:${path}`));
   });
@@ -710,7 +713,10 @@ describe('watch learning: a restart is not news', () => {
     t = run(engine, t, t + 16 * MINUTE, 10 * SECOND, () => [[path, null]]);
     const finding = engine.status().activeFindings.find((item) => item.detector === 'dropout');
     assert.ok(finding, detectors(engine).join(', '));
-    assert.match(finding.message, /No reading for 4[67] min/);
+    assert.match(finding.detail, /No reading for 4[67] min/);
+    // Since when the data stopped, not when the finding opened after the restart.
+    assert.ok(t - finding.since >= 46 * MINUTE && t - finding.since < 48 * MINUTE, `${(t - finding.since) / MINUTE} min`);
+    assert.match(engine.notificationStates().get(path).message, /^Under-keel clearance sending no data for 4[67] min: It normally updates every 10 s/);
   });
 
   it('does not learn a link\'s reconnection at every restart as a habit of the link', () => {
@@ -1332,9 +1338,10 @@ describe('watch learning: yardsticks learned from the data', () => {
     t = run(engine, t, t + 3 * MINUTE, SECOND, () => [[level, 52.5 + 2 * rand()]]);
     const found = engine.status().activeFindings.find((entry) => entry.detector === 'shift' && entry.path === level);
     assert.ok(found, 'the step is reported');
-    const spreads = Number(/\(([\d.]+)× its normal variation/.exec(found.message)[1]);
-    assert.ok(spreads < 6, `in its readings' spreads it is small: ${found.message}`);
-    assert.match(found.message, /its average usually stays within ±/);
+    // In its readings' spreads it is small: reported because its average
+    // left where it usually strays, not because the readings went far.
+    const spreads = Number(/\(([\d.]+)× its normal variation/.exec(found.detail)[1]);
+    assert.ok(spreads < 6, `in its readings' spreads it is small: ${found.detail}`);
   });
 
   it('does not report the same step on a path whose readings wander together', () => {

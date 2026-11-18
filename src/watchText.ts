@@ -18,6 +18,20 @@ export interface WatchFinding {
   readonly openedAt: number;
   readonly clearedAt?: number;
   readonly incidentId?: string;
+  /** The exact figures behind the plain message (measured value, normal variations, rate), for the tooltip. */
+  readonly detail?: string;
+  /** A level's value and usual alone (`13.3 V, usually 13.8 V`), for a line about a departure that is over. */
+  readonly brief?: string;
+  /** `noData`, `stopped` (dropouts) or `switching` (cycling). */
+  readonly kind?: string;
+  /** The path as the owner would name it, and that name split into its system and what is measured on it. */
+  readonly name?: string;
+  readonly system?: string;
+  readonly part?: string;
+  /** Since when a dropout has been without data (the finding can open later, after a restart). */
+  readonly since?: number;
+  /** Closed by a plugin restart while still open (it did not come back after it), not seen to recover. */
+  readonly closedByRestart?: boolean;
 }
 
 export interface WatchIncident {
@@ -269,30 +283,316 @@ export function formatAgo(at: number | undefined, now: number = Date.now()): str
   return `${Math.round(hours / 24)} d ago`;
 }
 
+/** `12 s`, `4 min`, `21 h`, `3 d`: a duration as an owner would say it. */
+export function plainDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const seconds = ms / 1000;
+  if (seconds < 90) return `${Math.round(seconds)} s`;
+  const minutes = seconds / 60;
+  if (minutes < 90) return `${Math.round(minutes)} min`;
+  const hours = minutes / 60;
+  if (hours < 48) return `${Math.round(hours)} h`;
+  return `${Math.round(hours / 24)} d`;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** `20:27` today, `yesterday 20:27`, `14 Nov 20:27` before that, in the browser's local time. */
+export function formatSince(at: number | undefined, now: number = Date.now()): string {
+  if (typeof at !== 'number' || !Number.isFinite(at)) return '—';
+  const date = new Date(at);
+  const today = new Date(now);
+  const dayStart = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const days = Math.round((dayStart(today) - dayStart(date)) / (24 * 60 * 60 * 1000));
+  const clock = formatClockTime(at);
+  if (days <= 0) return clock;
+  if (days === 1) return `yesterday ${clock}`;
+  return `${date.getDate()} ${MONTHS[date.getMonth()]} ${clock}`;
+}
+
 /**
- * An incident as plain text, for the log or a message: its findings as
- * measured, earliest first - the first sign is the likeliest cause - and
- * bounded however many findings it has.
+ * One line of an incident as the panel and the copied text show it: a
+ * finding, or several that started together and say the same kind of thing
+ * (four systems switching state in the same minute, two readings of one
+ * sensor with no data), merged with the findings themselves kept as
+ * `members`.
  */
-export function incidentText(incident: WatchIncident): string {
-  const header = 'The watch reported this incident; the first line is the earliest sign.';
-  const lines: string[] = [];
-  let used = header.length;
-  for (const finding of incident.findings) {
-    const state = finding.clearedAt === undefined ? '' : ' (since cleared)';
-    const line = `- ${formatClockTime(finding.openedAt)} ${finding.title}: ${finding.message}${state}`;
-    if (used + line.length > MAX_TEXT_CHARS) {
-      lines.push(`- …and ${incident.findings.length - lines.length} more`);
+export interface IncidentLine {
+  readonly key: string;
+  readonly open: boolean;
+  readonly severity: WatchSeverity;
+  readonly title: string;
+  readonly message: string;
+  /** The message without how far out or how often, where there is one: the earlier lines use it. */
+  readonly brief?: string;
+  /** The exact figures, one line per finding. */
+  readonly detail?: string;
+  readonly openedAt: number;
+  /** Since when it has been going on: the earliest of its findings. */
+  readonly since: number;
+  /** When it was back to normal: the last of its findings to clear. */
+  readonly clearedAt?: number;
+  /** Still open when a plugin restart closed it (or, merged, any of it): never seen back to normal. */
+  readonly closedByRestart?: boolean;
+  /** When the restart closed it: kept apart from when the rest of a merged line recovered. */
+  readonly restartedAt?: number;
+  readonly findings: readonly WatchFinding[];
+  /** The single-finding lines it merges; empty for a line of one finding. */
+  readonly members: readonly IncidentLine[];
+  /** Trend, Mute and Not useful: only on one open finding of an active incident. */
+  readonly actions: boolean;
+}
+
+export interface IncidentView {
+  /**
+   * What the incident is now: the engine's title while active, "All back to
+   * normal at HH:MM" once resolved, or "Closed by a plugin restart at HH:MM"
+   * when a restart closed it before its findings were seen to clear.
+   */
+  readonly headline: string;
+  /** Open findings, most severe first: "Needs attention now". */
+  readonly open: readonly IncidentLine[];
+  /** Cleared findings, in the order they started: "Earlier – all back to normal". */
+  readonly earlier: readonly IncidentLine[];
+  /** "Earlier – all back to normal", or just "Earlier" when a restart closed some of them. */
+  readonly earlierHeading: string;
+  /** How many earlier lines show before "Show all"; all of them when there are only a few. */
+  readonly earlierShown: number;
+  readonly omitted: string;
+}
+
+/** Earlier lines shown before "Show all", when there are more than this. */
+export const EARLIER_COLLAPSED = 5;
+
+// Findings started within this of the first of a merged line are "at once".
+const SAME_MOMENT_MS = 60 * 1000;
+const SEVERITY_ORDER: Record<WatchSeverity, number> = { warn: 1, alert: 2 };
+
+function capitalised(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** `a`, `a and b`, `a, b and c`. */
+function andList(items: readonly string[]): string {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+function unique(items: readonly string[]): string[] {
+  return [...new Set(items.filter((item) => item.length > 0))];
+}
+
+/** What a finding merges with, or undefined when it stands on its own. */
+function mergeKey(finding: WatchFinding): string | undefined {
+  // State switching: whichever systems, they flapped together.
+  if (finding.detector === 'cycling') return 'switching';
+  // No data, or no updates, from several readings of one system: one sensor.
+  if (finding.detector === 'dropout' && finding.kind && finding.system) return `${finding.kind}:${finding.system}`;
+  return undefined;
+}
+
+function nameOf(finding: WatchFinding): string {
+  return finding.name ?? finding.path;
+}
+
+function singleLine(finding: WatchFinding, active: boolean): IncidentLine {
+  const open = finding.clearedAt === undefined;
+  return {
+    key: `${finding.key}-${finding.openedAt}`,
+    open,
+    severity: finding.severity,
+    title: finding.title,
+    message: finding.message,
+    brief: finding.brief,
+    detail: finding.detail,
+    openedAt: finding.openedAt,
+    since: typeof finding.since === 'number' && Number.isFinite(finding.since) ? Math.min(finding.since, finding.openedAt) : finding.openedAt,
+    clearedAt: finding.clearedAt,
+    closedByRestart: finding.closedByRestart === true,
+    restartedAt: finding.closedByRestart === true ? finding.clearedAt : undefined,
+    findings: [finding],
+    members: [],
+    actions: active && open
+  };
+}
+
+/** The latest of some times, or undefined when there are none. */
+function latest(times: readonly (number | undefined)[]): number | undefined {
+  const known = times.filter((time): time is number => typeof time === 'number' && Number.isFinite(time));
+  return known.length > 0 ? Math.max(...known) : undefined;
+}
+
+function mergedLine(group: readonly WatchFinding[], active: boolean): IncidentLine {
+  const members = group.map((finding) => singleLine(finding, active));
+  if (members.length === 1) return members[0];
+  const first = group[0];
+  const open = members.every((member) => member.open);
+  let title: string;
+  let message: string;
+  if (first.detector === 'cycling') {
+    const systems = unique(group.map((finding) => finding.system ?? nameOf(finding)));
+    title =
+      systems.length > 1
+        ? `Several systems switched state at once (${systems.join(', ')})`
+        : `${capitalised(systems[0] ?? nameOf(first))}: ${group.length} states switched at once (${unique(group.map((finding) => finding.part ?? nameOf(finding))).join(', ')})`;
+    message = first.message;
+  } else {
+    const parts = unique(group.map((finding) => finding.part ?? nameOf(finding)));
+    const system = capitalised(first.system ?? nameOf(first));
+    title = first.kind === 'noData' ? `${system} sensor sending no data` : `${system} sensor stopped updating`;
+    message = `${capitalised(andList(parts))} ${first.kind === 'noData' ? 'are empty' : 'stopped'}. ${first.message}`;
+  }
+  return {
+    key: members.map((member) => member.key).join('|'),
+    open,
+    severity: members.reduce<WatchSeverity>((worst, member) => (SEVERITY_ORDER[member.severity] > SEVERITY_ORDER[worst] ? member.severity : worst), 'warn'),
+    title,
+    message,
+    detail: group.map((finding) => `${nameOf(finding)}: ${finding.detail ?? finding.message}`).join('\n'),
+    openedAt: first.openedAt,
+    since: Math.min(...members.map((member) => member.since)),
+    clearedAt: open ? undefined : Math.max(...members.map((member) => member.clearedAt ?? member.openedAt)),
+    closedByRestart: members.some((member) => member.closedByRestart),
+    restartedAt: latest(members.filter((member) => member.closedByRestart).map((member) => member.restartedAt)),
+    findings: group,
+    members,
+    actions: false
+  };
+}
+
+/** Findings into lines: those that started together and say the same kind of thing merged. */
+function linesOf(findings: readonly WatchFinding[], active: boolean): IncidentLine[] {
+  const groups: { key?: string; findings: WatchFinding[] }[] = [];
+  for (const finding of [...findings].sort((a, b) => a.openedAt - b.openedAt)) {
+    const key = mergeKey(finding);
+    const group = key === undefined ? undefined : groups.find((item) => item.key === key && finding.openedAt - item.findings[0].openedAt < SAME_MOMENT_MS);
+    if (group) group.findings.push(finding);
+    else groups.push({ key, findings: [finding] });
+  }
+  return groups.map((group) => mergedLine(group.findings, active));
+}
+
+/**
+ * An incident as the owner reads it: what needs attention now, then what
+ * happened earlier and is back to normal. The headline, and the severity the
+ * panel colours it with, are the engine's: they are not worked out again
+ * here.
+ */
+export function incidentView(incident: WatchIncident): IncidentView {
+  const active = incident.status === 'active';
+  // A resolved incident's findings are all over, whatever they say.
+  const isOpen = (finding: WatchFinding) => active && finding.clearedAt === undefined;
+  const open = linesOf(incident.findings.filter(isOpen), active).sort(
+    (a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] || a.openedAt - b.openedAt
+  );
+  const closedAt = incident.resolvedAt ?? incident.updatedAt;
+  // A restart closes the findings that do not come back after it: they were
+  // never seen to clear, so they are not "back to normal". The engine marks
+  // each one; an incident a restart closed, saved before it did, has its
+  // findings closed at the restart.
+  const interrupted = !active && incident.interrupted === true;
+  const earlier = linesOf(
+    incident.findings
+      .filter((finding) => !isOpen(finding))
+      .map((finding): WatchFinding => {
+        const clearedAt = finding.clearedAt ?? closedAt;
+        const closedByRestart = finding.closedByRestart === true || (interrupted && clearedAt === closedAt);
+        return { ...finding, clearedAt, closedByRestart };
+      }),
+    false
+  );
+  const restarted = earlier.some((line) => line.closedByRestart);
+  return {
+    headline: active
+      ? incident.title
+      : interrupted
+        ? `Closed by a plugin restart at ${formatClockTime(closedAt)}`
+        : restarted
+          ? `Over at ${formatClockTime(closedAt)}; a plugin restart closed part of it`
+          : `All back to normal at ${formatClockTime(closedAt)}`,
+    open,
+    earlier,
+    earlierHeading: restarted ? 'Earlier' : 'Earlier – all back to normal',
+    earlierShown: earlier.length > EARLIER_COLLAPSED + 1 ? EARLIER_COLLAPSED : earlier.length,
+    omitted: omittedText(incident)
+  };
+}
+
+function sentence(text: string): string {
+  const trimmed = text.trim().replace(/[.;:,]+$/, '');
+  return trimmed ? `${trimmed}.` : '';
+}
+
+/** `yesterday 20:27 (21 h)`: since when an open line has been going on, and for how long. */
+export function sinceText(line: IncidentLine, now: number = Date.now()): string {
+  const lasted = plainDuration(Math.max(0, now - line.since));
+  return `${formatSince(line.since, now)}${lasted ? ` (${lasted})` : ''}`;
+}
+
+/** `Under-keel sensor sending no data – since yesterday 20:27 (21 h). Clearance and … are empty. …` */
+export function openLineText(line: IncidentLine, now: number = Date.now()): string {
+  return [`${line.title} – since ${sinceText(line, now)}.`, sentence(line.message)].filter(Boolean).join(' ');
+}
+
+/** `20:25 Victron DC-DC input voltage lower than usual: 13.3 V, usually 13.8 V. Normal again at 21:11.` */
+export function earlierLineText(line: IncidentLine): string {
+  // The restart's time and the recovery's are kept apart: in a merged line
+  // some can have settled after the restart closed the others.
+  const settled = latest(line.members.filter((member) => !member.closedByRestart).map((member) => member.clearedAt));
+  const back = line.closedByRestart
+    ? settled !== undefined
+      ? `Settled by ${formatClockTime(settled)}, apart from what was still open when the plugin restarted at ${formatClockTime(line.restartedAt)}.`
+      : `Still open when the plugin restarted at ${formatClockTime(line.restartedAt ?? line.clearedAt)}.`
+    : line.members.length > 0
+      ? `All settled by ${formatClockTime(line.clearedAt)}.`
+      : `Normal again at ${formatClockTime(line.clearedAt)}.`;
+  const message = line.brief ?? line.message;
+  return `${formatClockTime(line.openedAt)} ${line.title}${message ? `: ${sentence(message)}` : '.'} ${back}`;
+}
+
+/**
+ * An incident as plain text, for the log or a message: what needs attention
+ * now, then what is already back to normal, earliest first - the same lines
+ * as the panel - and bounded however many findings it has.
+ */
+export function incidentText(incident: WatchIncident, now: number = Date.now()): string {
+  const view = incidentView(incident);
+  // Every line in order, with how many findings it stands for: the notice of
+  // what does not fit counts findings, not lines (a merged line is several,
+  // and the line about findings the engine already dropped is that many).
+  const lines: { text: string; findings: number }[] = [];
+  if (view.open.length > 0) {
+    lines.push({ text: 'Needs attention now:', findings: 0 });
+    for (const line of view.open) lines.push({ text: `- ${openLineText(line, now)}`, findings: line.findings.length });
+  }
+  if (view.earlier.length > 0 || view.omitted) {
+    lines.push({ text: `${view.earlierHeading}:`, findings: 0 });
+    // Findings dropped to keep the incident bounded still happened: said
+    // first, as they were the earliest.
+    if (view.omitted) lines.push({ text: `- (${view.omitted})`, findings: Math.max(0, incident.omitted ?? 0) });
+    for (const line of view.earlier) lines.push({ text: `- ${earlierLineText(line)}`, findings: line.findings.length });
+  }
+  const notice = (count: number) => `- …and ${count} more`;
+  let left = lines.reduce((sum, line) => sum + line.findings, 0);
+  // However long the headline (a long displayName makes a long title), it
+  // leaves room for the notice of what does not fit.
+  const reserve = left > 0 ? 1 + notice(left).length : 0;
+  const out = [`Watchkeeper: ${view.headline}`.slice(0, MAX_TEXT_CHARS - reserve)];
+  let used = out[0].length;
+  for (const line of lines) {
+    const after = left - line.findings;
+    // Room for this line and its newline, and for the notice after it should
+    // anything be left over.
+    const needed = 1 + line.text.length + (after > 0 ? 1 + notice(after).length : 0);
+    if (used + needed > MAX_TEXT_CHARS) {
+      if (left > 0 && used + 1 + notice(left).length <= MAX_TEXT_CHARS) out.push(notice(left));
       break;
     }
-    lines.push(line);
-    used += line.length + 1;
+    out.push(line.text);
+    used += 1 + line.text.length;
+    left = after;
   }
-  // Findings dropped to keep the incident bounded still happened: said, after
-  // the first sign they followed.
-  const omitted = omittedText(incident);
-  if (omitted) lines.splice(Math.min(1, lines.length), 0, `- (${omitted})`);
-  return [header, ...lines].join('\n');
+  return out.join('\n');
 }
 
 /** SVG polyline points for a sparkline of `[t, v]` pairs in a width×height box. */

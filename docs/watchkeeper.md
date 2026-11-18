@@ -506,8 +506,9 @@ longer, than the path's own episodes make likely:
   and come back from is news, however widely its episodes vary.
 
 The first ones are always reported, and so is a departure of a new size.
-The finding then says what the path usually does ("it has had 7 such rises
-in the past 3 days, usually up to 8.1×, lasting up to 2 min"), the watch
+The finding then says what the path usually does ("It has risen like this 7
+times in the past 3 days, for up to 2 min each; this one is clearly bigger";
+its `detail` has the sizes: "usually up to 8.1×, lasting up to 2 min"), the watch
 report lists what it has learned to expect, and `status()` has them under
 `habits`. Marking a finding on the path **useful** (or resetting its
 feedback) forgets them: a departure the crew wants to hear about is never
@@ -537,8 +538,7 @@ GNSS findings only ever group with GNSS findings. A finding that opens in the
 tick an incident resolved reopens it, by system or by the 3-minute gap
 alone, whatever its age (a finding that cleared in that tick counts as still
 open), and the incident is then named after it while it is
-open. Findings are listed in the order they started, so the first one is
-labelled *first sign*.
+open. Findings are kept in the order they started.
 
 While an incident is active it is named after its earliest finding that is
 still open, and its `severity` is the worst among its open findings: an
@@ -555,6 +555,92 @@ carries their number as `omitted`, which the panel and the copied incident text
 show as *N earlier findings not shown*. The last 50
 incidents are kept.
 
+**How a finding reads.** Each finding has a `title` and a `message` in an
+owner's words - these are what the panel, the copied incident and the Signal K
+notification show - and a `detail` with the exact figures, shown as the
+panel's tooltip and under its trend, and returned by the API:
+
+| Check | Title and message | `detail` |
+| --- | --- | --- |
+| `shift` | *Victron DC-DC input voltage lower than usual*: 13.3 V, usually 13.8 V – far outside its normal range | 13.30 V, −0.54 V from its usual 13.84 V (10.8× its normal variation) |
+| `shift`, a share | *Nano memory use higher than usual*: 87 %, usually 72 % – clearly outside its normal range | 0.870, +0.152 from its usual 0.718 (7.6× its normal variation) |
+| `shift`, with a habit | *Nano CPU temperature higher than usual*: 53 °C, usually 51 °C – a little outside its normal range. It has risen like this 8 times in the past 15 h, for up to 11 min each; this one is no bigger than those | 53.4 °C, +2.7 °C from its usual 50.7 °C (3.6× its normal variation); it has had 8 such rises in the past 14.9 h, usually up to 4.0×, lasting up to 11 min |
+| `dropout`, null | *Under-keel clearance sending no data*: It normally updates every 10 s (source signalk-underkeel) | No reading for 20.6 h: the sensor is sending "no value" (null); … |
+| `newState` | *Under-keel state now reads "unknown"*: Before only "alarm" or "off" | A value this path has not taken before (seen before: "alarm", "off") |
+| `cycling` | *Remote controller plugin hh live switching unusually often*: 4 switches in the last hour, normally under 1 an hour | 4 changes in the last hour, against about 0.3 per hour normally |
+| `frozen` | *Main engine temperature looks stuck*: Showing 80.1 °C unchanged for 8 min (47 updates); normally it changes within 16 s | Repeating exactly 80.1 °C for 8 min (47 updates); it normally holds a value for 16 s at most |
+
+- **Names.** The path's own `meta.displayName` when its source published
+  one. Otherwise the path in words: the Signal K branch in front
+  (`electrical.`, `environment.`, `navigation.`, `sensors.`, `control.` …) is
+  dropped when at least two words are left, abbreviations whose meaning is
+  not in doubt are spelled out (`dcdc` DC-DC, `cpu` CPU, `sd` SD card, `gnss`
+  GNSS, `fps` frames/s, `ac`/`dc`, `nmea`, `ais`, `gps`, `rx`/`tx`
+  received/sent, `utilisation` use, …), a trailing `in`/`out` after a
+  quantity is its input or output (`voltageIn` is the input voltage), and a
+  word said twice in a row is said once. A token not on the list (`hh`) is
+  kept as the word it is: the watch does not guess.
+- **Numbers** are rounded to the difference that was measured, at most two
+  decimals: voltages in tenths, temperatures whole or in tenths, a ratio
+  (Signal K units `ratio`, or a `…Utilisation`/`…Ratio`/`…Fraction` leaf
+  whose values are all 0..1) as a whole percentage - with one more decimal
+  wherever rounding would make two different numbers read the same.
+- **How far out** a level is says *a little* (under 5 of its normal
+  variations), *clearly* (under 10) or *far*. Its rate of change is said only
+  while the reading is still moving away from normal; a spike already on its
+  way back is not given one.
+- A dropout says since when in the panel and the copied text, and for how
+  long in its notification (*Under-keel clearance sending no data for 21 h:
+  …*). That is since the data stopped, which can be before the finding opened
+  (after a restart); the finding carries it as `since`.
+- Each finding also carries `name`, and that name split into `system` and
+  `part` (`under-keel`, `escape heading`), and `kind` (`noData`, `stopped`,
+  `switching`), which the panel uses to put findings that started together on
+  one line. A level carries `brief`, its value and usual alone, for the line
+  about it once it is over.
+
+**In the panel** an incident reads from what matters now to what is over:
+
+```
+Alert: Under-keel clearance sending no data (+17 related)
+Needs attention now
+⚠ Under-keel sensor sending no data – since yesterday 20:25 (21 h)
+  Clearance and escape heading are empty. It normally updates every 10 s (source signalk-underkeel)
+  [Each of the 2: trend, mute or not useful]
+⚠ Nano CPU temperature higher than usual – since 15:40 (80 min)
+  53 °C, usually 51 °C – a little outside its normal range. It has risen like this 8 times …
+  [Trend] [Mute 1 h] [Not useful]
+Earlier – all back to normal
+• 20:25 Several systems switched state at once (under-keel, remote controller, vision, heading hold):
+  4 switches in the last hour, normally under 1 an hour. All settled by 22:34.
+• 20:25 Victron DC-DC input voltage lower than usual: 13.3 V, usually 13.8 V. Normal again at 21:11.
+• 00:25 Nano SD card use higher than usual: 30 %, usually 29 %. Normal again at 01:26.
+  [Show all 8]
+```
+
+- The headline is the incident's `title` and its colour the incident's
+  `severity`, both as the engine set them; once the incident has resolved it
+  reads *All back to normal at HH:MM*. An incident a plugin restart closed
+  before its findings were seen to clear reads *Closed by a plugin restart at
+  HH:MM* instead: those findings say *Still open when the plugin restarted at
+  HH:MM*, not *Normal again*, and their section is headed just *Earlier*. A
+  finding that did not come back after a restart while others in its incident
+  did is marked `closedByRestart` and reads the same; once that incident is
+  over it reads *Over at HH:MM; a plugin restart closed part of it*.
+- Open findings come first, the most severe first, each with since when and
+  for how long; cleared ones follow in the order they started, one line each
+  with when they were back to normal. More than six earlier lines show the
+  first five and *Show all*.
+- **Trend**, **Mute 1 h** and **Not useful** are only on open findings.
+- Findings that say the same kind of thing and started within a minute of
+  each other share a line: state switching on several systems (*Several
+  systems switched state at once (…)*), and no data - or no updates - from
+  several readings of one system (*Under-keel sensor sending no data*). The
+  findings themselves are a click away, with their buttons when open.
+- **Copy as text** gives the same lines, under *Needs attention now* and
+  *Earlier – all back to normal*, and at most 1,800 characters: when the
+  lines do not fit, the last one says how many findings were left out.
+
 **Notifications.** Each watched path gets one notification carrying its worst
 open finding, plus one each for GNSS, the data feed and each rule. Incidents
 have none of their own: a path whose alert cleared publishes `normal` even
@@ -568,8 +654,11 @@ notifications.watchkeeper.rules.<rule id>
 ```
 
 ```json
-{ "state": "alert", "method": ["visual"], "message": "Main engine temperature unusually high: 92.9 °C, +12.2 °C from its usual 80.1 °C (40.6× its normal variation)" }
+{ "state": "alert", "method": ["visual"], "message": "Main engine temperature higher than usual: 93 °C, usually 80 °C – far outside its normal range" }
 ```
+
+The message is the finding's title and plain message (above); a dropout's
+says how long the data has been missing.
 
 - States are `warn` or `alert`, never `alarm` or `emergency`, which belong to
   real alarm sources.
@@ -873,8 +962,8 @@ saved across restarts. It returns counts (`incidents`, `alerts`, `findings`,
 ```
 2 incidents (1 alert, 1 warning) from 5 findings.
 Still active: Engine room temperature stopped updating.
-Longest: House battery voltage unusually low, 42 min.
-Repeated: House battery voltage unusually low ×2.
+Longest: House battery voltage lower than usual, 42 min.
+Repeated: House battery voltage lower than usual ×2.
 Sensors and data: Engine room temperature stopped updating.
 GNSS: no warnings; dead reckoning or a second receiver cross-checked the fix (last at 11:58 UTC).
 Your watches fired: Main engine temperature is above 90.0 °C for 30 s.
@@ -1397,12 +1486,12 @@ of one core. No GPU is used.
 | `lib/watch/rules.cjs` | Rule format, validation, evaluation, plain-language description |
 | `lib/watch/rule-parser.cjs` | Plain language → rule, without a model |
 | `lib/watch/rule-assist.cjs` | The schema-constrained model fallback |
-| `lib/watch/narrate.cjs` | Finding text from templates |
+| `lib/watch/narrate.cjs` | Finding text from templates: the owner's wording and the exact detail |
 | `lib/watch/format.cjs` | Operator units, path names, unit parsing |
 | `lib/watch/stats.cjs` | Exponential averages, distances, trends |
 | `lib/watch-service.cjs` | Signal K wiring: subscription, notifications, persistence, replay, rule compilation |
 | `lib/history-service.cjs` | History API client for the replay: server resolution, credential scoping, bounded reads |
 | `index.cjs` | The plugin: settings, routes, stored rules |
 | `src/AppPanel.tsx`, `src/WatchPanel.tsx`, `src/watchText.ts` | The panel and its helpers |
-| `test/*.test.cjs`, `src/watchText.test.ts` | Tests |
+| `test/*.test.cjs`, `src/watchText.test.ts` | Tests (`test/watch-narrate.test.cjs` and `src/watchText.test.ts` read an owner's real incident) |
 | `scripts/preview-host.mjs --demo` | A scenario to see it working without a boat |
