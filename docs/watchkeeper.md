@@ -31,6 +31,7 @@ rule format, the HTTP API, and how to tune it. For a short introduction see the
 - [Settings](#settings)
 - [Replay and the History API](#replay-and-the-history-api)
 - [Persistence](#persistence)
+- [Measuring it on your own data](#measuring-it-on-your-own-data)
 - [Tuning](#tuning)
 - [Performance](#performance)
 - [Limitations](#limitations)
@@ -86,8 +87,12 @@ standard Signal K path or a plugin's own.
   clears when it reads again. Spells of no value that the path came back
   from are a [habit](#habits): once it has had three, over six hours, only
   a spell clearly longer than they usually were is reported.
-- **Yesterday's figures** (`…Yesterday`) are not watched: they change once
-  a day, at midnight, by design (a default exclusion, `**.*Yesterday`).
+- **A number is a state code only if it behaves like one.** A whole-number
+  path with few values starts as discrete, but a value it never had is a
+  new state only on its first change, for a path named as a state code, or
+  once the path has gone back to a value it had before (a charger 3, 4, 3).
+  One that keeps taking new values - a daily figure, a signal strength - is
+  measuring, and is not reported at each new value.
 - **Kind** is decided from the values. Strings and booleans are *discrete*.
   Numbers are *continuous*, unless the first 20 samples are all integers with
   at most 4 distinct values (a pump state, a mode code), in which case they
@@ -126,15 +131,16 @@ standard Signal K path or a plugin's own.
     counters.
   - Any other number is a counter if, over at least 30 samples, it has never
     fallen and is named as one (`runTime`, `…Hours`, `…Count`, `…Total`,
-    `usage.rx`/`usage.tx`, `…Bytes`, `…Packets`, `…Retransmissions`,
-    `sequenceNumber`,
+
     `energy…`, `lifetimeDischarge`/`Recharge`/`Charge`/`Energy`,
     `…Consumed`, `…Today`, `yield…`, `used`, `odometer`, `log`, `trip`), in
     any unit that is not a measurement's (s, m³, J, C, m, but also h, Ah or
     kWh from a plugin). A drop to (nearly) zero is a reset - a daily yield
     at midnight, a trip log cleared - and does not end it.
   - Any other number that is not a measurement or a state code is a
-    counter once it has **shown itself one by a reset**: it dropped to at
+    counter once it has **only climbed through a whole day of watching**
+    (a day has a night in it, and no measurement climbs through one without
+    once going down), or once it has **shown itself one by a reset**: it dropped to at
     most 1 % of its value - or, after 100 rises in a row, to any lower
     value (a link that restarts its sequence numbers somewhere else) - and
     then counted up again from there (five rises, none of them recovering
@@ -234,10 +240,25 @@ value", so its floor is its resolution. Before that rule, a mean that had
 decayed to 1e-13 after a spike made the floor 1e-9, and the rounding noise
 of the decay scored thousands of spreads and kept the finding open.
 
+**How far its average usually strays.** Beside the spread of its readings,
+each path learns how far its fast average strays from its baseline when
+nothing is happening (exponentially weighted as the baseline, and not while
+it is away from it). For a sensor whose readings scatter independently that
+is much less than their spread - the average takes out most of the scatter -
+and for one whose readings wander together it is about the same. Departures
+are measured by it (below), so a step that hides in a noisy sensor's scatter
+stands out in its average, and a slowly wandering one is not reported for
+its wandering. A path saved before it was learned starts from its spread,
+and is judged as before until it has learned; while a path re-learns, it is
+its spread again. [Habits](#habits) are kept as before, in the readings'
+spreads: an episode is a stretch at least `zClear` of them away, so a noisy
+link's every small flicker is no habit that a real drift could later pass
+for.
+
 **Robust updates.** Once a path has settled, a single sample moves the
 baseline by at most 4 spreads' worth. While a path is in an *excursion* (fast
-average at least `zClear` spreads from the mean), the spread is frozen and the
-mean creeps by at most one spread per sample. Otherwise a long departure would
+average at least `zClear` times as far from the mean as it usually strays),
+the spread is frozen and the mean creeps by at most one spread per sample. Otherwise a long departure would
 widen the spread until it no longer stood out. An excursion that lasts **60
 minutes** is accepted as the new normal and the path re-learns for 10 minutes.
 
@@ -249,11 +270,14 @@ been watched for `watchLearningMinutes` (default 30).
 
 ## Checks
 
-`z` below is `(fast average − baseline mean) / max(spread, noise floor)`.
+`z` below is `(fast average − baseline mean) / max(spread, noise floor)`, the
+size a finding gives and its habits are kept in; *departure* is the same
+difference over how far the fast average usually strays (at least the noise
+floor), which decides whether the path is departing at all.
 
 | Check | Fires when | Severity | Persist / clear |
 | --- | --- | --- | --- |
-| **Unusually high / low** (`shift`) | `\|z\| ≥ zWarn`, and, for a path with a [habit](#habits) of such departures, clearly beyond it; clears below `zClear` | `alert` at `\|z\| ≥ zAlert` (and twice its habit), else `warn` | 15 s / 60 s |
+| **Unusually high / low** (`shift`) | `\|departure\| ≥ zWarn`, and, for a path with a [habit](#habits) of such departures, clearly beyond it (in `z`); clears below `zClear`. The text gives `z`, and how far its average usually stays when that is much less than its spread; and its last few seconds' average, with the last reading beside it, when the two disagree | `alert` at `\|departure\| ≥ zAlert` (and `z` twice its habit), else `warn` | 15 s / 60 s |
 | **Stopped updating** (`dropout`) | A path that updates at least once a minute (30+ samples) has been silent for more than `max(30 s, 10 × usual interval)` | `warn` | immediate / on next update |
 | **Data feed silent** (`feed`) | At least 4 regularly updating paths, and at least half of them, are silent at once, having gone quiet together, with nothing on their connections still reporting. Together: each silent path's silence may have begun at one moment - within 5 minutes or its own dropout limit after its last sample for a steady path, within its limit for a cycling or raised one. Of the moments most such paths share, the latest that makes a silent feed is the candidate (else the one most paths share): a group that went quiet an hour before keeps its own dropouts, and its paths are left out of the count, as they were not reporting when the feed went quiet; paths that went quiet after it are counted among the paths the half is taken of. The paths of a silent feed already reported stay in it while they are silent, so a second connection going quiet later joins it rather than unfolding it. Only moments enough paths share to be a silent feed are judged (at least 4 silent, and at least as many as the steady paths still reporting), the 8 newest of them, plus the one most paths share: the work per tick stays bounded however many paths died one by one. A connection is the label the server gives the update's source (`update.source.label`: `can0` for `can0.35`, the plugin's id - `venus` - for every device of a plugin whose `$source` names the device after several dots), kept with the path across a restart; without one (a history replay), the part of the source before its last dot (`can0` of `can0.35`, `n2k.can1` of `n2k.can1.35`); a source with no dot is a connection of its own, and paths with no known source are one. A path is live when it is not overdue (silent for no longer than 1.5 times its interval, and at least the jitter; a raised or cycling one until its own limit) and reported after its connection's paths of the group went quiet (the group, for a connection with none in it) beyond the jitter of its own interval: a sample later than its interval after the last of them, or two samples since. So a connection whose paths stopped a minute before another's is live by what it sent after its own silence: its paths are dropouts, not part of the other connection's silent feed. The jitter is twice the group's shortest interval, 5 s to 1 min. A slow path whose one sample came in a few seconds after the rest went quiet was still on its way, and is not evidence that the connection lives; nor is a raised path seen in that window. A live path, a raised or cycling one included, counts toward the paths the half is taken of; a connection with a live path did not die, so its silent paths are their own dropouts. A raised or cycling path that is neither silent nor live is left out. A connection with a path that is neither live nor overdue yet, and due to report within 2 minutes of the connection's paths going quiet (a steady path an interval after its last sample; a raised or cycling one after its last gap, or a cycle's longest outage, and not yet past 1.5 times that), is undecided: the feed waits for that path, and so do the dropouts of the silent paths that would fold into it - none of them is reported until the path proves live (its connection's silent paths are their dropouts, at once) or misses its next sample (the feed, with no dropouts), and for 2 minutes after that connection's paths went quiet at most, after which it is decided as it stands: a path elsewhere that dies later does not start the wait again. If the silence is a feed even with the undecided connections taken for live, it is reported without them, and their paths wait. So the feed alert comes up to one slow interval, at most 2 minutes, later (with a 55 s path that sent once 12 s after the rest stopped, at 95 s rather than 30 s), and it does not open and then clear into its paths' dropouts a minute later. A finding that opens in the tick an incident resolved joins that incident again, and the incident is then named after it: a silent feed that cleared into its paths' dropouts is no longer *Signal K data stopped arriving*. Reported once instead of per path. Decided over all paths, and reported unless the silence is only the muted paths': at least half of the unmuted regular paths must be silent too, so a gateway that dies is a silent feed even with some of its paths muted, and muted paths going quiet alone are not. A muted path counts only if its silence may have begun at the moment the unmuted ones' did - the test they pass (within 5 minutes or its own dropout limit after its last sample), or with the paths of a feed already reported - and its connection has no live path: a sensor muted because it is unplugged is not evidence that the feed died now, and is left out of the paths the half is taken of; muted paths that went quiet an hour after four unmuted ones did are not one silence with them, and count among the paths the half is taken of, as they were reporting then. At least 4 unmuted paths (or all of them, if fewer) must be silent. The dropouts of the paths it counts fold into it; other dropouts stay open. Muting `feed` mutes it; the counted paths' dropouts stay folded into it while muted | `alert` | immediate |
 | **Looks stuck** (`frozen`) | A continuous path repeats exactly the same non-zero value 30+ times, for at least 5 minutes and at least twice as long as it normally holds one value in its current operating state (100+ samples, and 30+ runs over 30+ minutes of them, learned). "Normally" is the run length below which 99 % of its time was spent, rounded up to a power of two of a second: a wind sensor that never holds a value for more than 2 s is stuck after 5 minutes of one; a stopped engine's coolant that sits on one reading for half an hour is stuck after a little over two hours; a counter that ticks in bursts and then sits for hours is a counter (or holds for hours) and is not stuck. Not while it re-learns, and not while it is silent or sends no value (its dropout reports that): the hold is timed to its last sample. Only against enough of the path's holding: the runs learned must add up to six times the limit, and a limit longer than 5 minutes is judged only once they cover a day of watching - observed time, so hours the plugin was down and spells of no value do not count (slow sensors sit still longest at night; a sea-water temperature's evening plateaus say nothing of its night). Reading again after a spell of no value starts a new hold. A silence, an operating-state change or a restart starts the hold again from then, so a sensor that comes back stuck is judged from its return | `warn` | immediate |
@@ -387,7 +411,28 @@ interface saying 0 rpm) does not flip the state back and forth:
 | `propulsion.<id>.state` | its value | same | 15 min |
 | `electrical.{charger(s),inverter(s),solar,alternator(s),ac}.<id>.{chargingMode,mode,state}` | its value | `electrical.` | 10 min |
 | `navigation.state` | its value | `propulsion.`, `electrical.`, `tanks.` | 10 min |
-| The sun at the vessel (`watchkeeper.daylight`), worked out from `navigation.position` and the time | `day` with the sun 3° or more above the horizon, `night` 7° or more below it, `twilight` between (with 0.5° of hysteresis at each boundary) | `electrical.solar.` | through twilight, and 15 min after it |
+| The sun at the vessel (`watchkeeper.daylight`), worked out from `navigation.position` and the time | `day` with the sun 3° or more above the horizon, `night` 7° or more below it, `twilight` between (with 0.5° of hysteresis at each boundary) | `electrical.solar.`, and whatever else it is learned to move | through twilight, and 15 min after it |
+| Any other path that changes state (a discrete path's value) | its value | the paths it is learned to move (below) | half again as long as their answers last, 2 to 15 min |
+
+**Operating states are also learned from the data** (`lib/watch/drivers.cjs`).
+The named gates are what most boats have, not all a boat has: a watermaker,
+a generator, a fridge compressor, an inverter a plugin names its own way.
+Every time a departure begins on a path, the watch notes which paths changed
+state in the 20 minutes before - any discrete path's value, any gate's
+regime, the sun - each with its latest change. If a path's departures follow
+one of them, within 1, 5 or 20 minutes, far more often than a window that
+long would contain a change of it by chance (a binomial tail below 1 in
+3,000 for each window, 1 in 1,000 over the three, from how often that path
+changes at all), the pair is learned: a pump's current answers within a
+minute, a battery's voltage within minutes, a cabin's temperature a quarter
+of an hour after its heater starts. From then on that change is an operating-state change for that
+path, exactly as a named gate's: it re-learns through it and has back the
+baseline it had in that state. A path that changes all the time (a
+timestamp) is in every window and explains nothing; a watermaker that starts
+every two hours explains the current that rises each time, after a few runs.
+Learned pairs are listed in the inventory (`learnedStates`) and kept across
+restarts; the named gates' own entries stay as priors, and what is learned
+adds to them.
 
 The sun's elevation comes from the low-precision solar position of the
 Astronomical Almanac (`lib/watch/sun.cjs`), once a minute from a position
@@ -413,7 +458,9 @@ A gate that changes rarely, like an engine starting, still acts at once.
 On a change, every affected path:
 
 1. **files its settled baseline** under the state it is leaving, if it had been
-   settled for at least 10 minutes. Up to 6 states per path are kept.
+   settled for at least 10 minutes and is not in the middle of a departure
+   (its mean is held back then, and is not its level in that state). Up to 6
+   states per path are kept.
 2. **re-learns** through the settling period, raising nothing.
 3. **restores** the baseline it learned the last time it was in the new state,
    once the settling period ends, if there is one and the new state is active.
@@ -437,12 +484,27 @@ An *episode* is a stretch where a check's score stays at or above its clear
 level (`zClear` spreads for the level check, its threshold for cycling),
 kept apart for rises and drops. When it ends without being re-learned or
 accepted as the new normal, its peak and length are kept (40 at most, for
-14 days, enough to span six hours however often they come); one that starts within 10 minutes of the last one's end is the
-same one back again. Once a path has had at least **3** of them, over at
-least **6 hours**, a new one is reported only if it goes more than **1.5
-times** further than they usually did, or lasts more than twice as long
-(and at least 5 minutes longer). "Usually" is the 80th percentile of the
-kept peaks and lengths, so one real event does not set the bar for good.
+14 days, enough to span six hours however often they come); one that starts
+again before as long as the last one lasted has passed (a minute at least)
+is the same one back again. A departure that is accepted as the new normal
+is kept too, as a habit of level changes (`level`): a daily figure that
+steps at midnight, a setpoint moved. Once a path has had at least **3**
+episodes, over at least **6 hours** - the least a habit's size and spread
+can be read from - a new one is reported only if it goes further, or lasts
+longer, than the path's own episodes make likely:
+
+- How far is fitted to the path: its peaks and lengths as log-normal, with
+  the spread shrunk toward a prior while there are few. A link whose spikes
+  are all alike is news a little beyond them; one whose spikes vary widely,
+  only well beyond.
+- How likely is the **alert budget**, the one number the sensitivity sets:
+  how many of a path's routine episodes a day may still be reported - about
+  one a month at normal (0.03 a day; 0.01 at low, 0.1 at high). A path that
+  has ten episodes a day gives each one chance in 300 at normal.
+- Never past the path's own record by more than its own scatter (as far as
+  the sensitivity reaches): a departure further than any the path has made
+  and come back from is news, however widely its episodes vary.
+
 The first ones are always reported, and so is a departure of a new size.
 The finding then says what the path usually does ("It has risen like this 7
 times in the past 3 days, for up to 2 min each; this one is clearly bigger";
@@ -1246,9 +1308,23 @@ reported as dropouts or failovers. About 1.2 MB per 1,000 paths.
 
 **A restart is not news.**
 
+**How long each source takes to come back is learned** (`lib/watch/restarts.cjs`).
+Every plugin announces itself again at its own pace: a GNSS receiver within
+seconds, a Bluetooth plugin after it has scanned for its sensors, an
+under-keel plugin once it has a depth. For each source, the watch keeps how
+long its paths took to be heard again (a second reading - the first may be
+the server's cached value) and how long its state paths took to come back
+from their detour, over its last 8 restarts. The windows below are fitted
+to those - the time its restarts would exceed only once in a hundred, as
+described under *Paths are reacquired* - and kept within 1 to 60 minutes;
+until a source has been through a restart, the defaults given here hold.
+The inventory lists them (`restarts`).
+
 - *Open findings carry over.* After a restart within 30 minutes of the last
   save, a finding that was open is the same finding if its condition is back
-  within 20 minutes (longer than paths are given to be heard again, below;
+  within 20 minutes, or the slowest source's time to be heard again and 5
+  minutes more, once that is learned (longer than paths are given to be
+  heard again, below;
   back in time means its condition was first active again by then, even if
   its persistence ends after): opened when it first opened, in the same incident,
   counted once in the report. Its notification is raised again, because the
@@ -1256,9 +1332,20 @@ reported as dropouts or failovers. About 1.2 MB per 1,000 paths.
   of the restart, and its incident is marked *plugin restarted*. After a
   longer time down, incidents that were open are closed at once, as before.
   Either way, a finding the restart closed is in the report's log.
-- *Start-up settles for 2 minutes.* Every plugin announces its values again
-  when the server starts, and some pass through another state on the way (a
-  link that reads "down" until it has connected). For those 2 minutes,
+- *Start-up settles for 2 minutes* - for each path, once learned, its
+  source's usual time to be heard again and the settling after that (a link
+  reconnecting spikes its round-trip time once it is heard): as long as the
+  path's own departures after its last 8 restarts lasted once it was heard
+  again (each to its last end, also when that was within the start-up, not
+  to the start-up's end - a start-up measured by itself would grow at every
+  restart), fitted as the windows below are, 2 minutes at least and 15 at most
+  (a departure lasting longer after a restart is a fault that began then,
+  and is not learned as settling). The path's own, not its source's: a
+  battery's voltage from the plugin whose link spikes at every restart has
+  nothing to settle, and a fault of it just after a restart is reported; for what is not one path's (gates, the
+  feed, GNSS), the quicker sources' time and 2 minutes, never less than 2. Every plugin announces its values again when the server
+  starts, and some pass through another state on the way (a link that reads
+  "down" until it has connected). Meanwhile,
   switches are not counted toward cycling; a value never seen before is a
   new state only if the path still holds it when they are over; an
   operating state that changes is applied once, as it stands at the end;
@@ -1268,7 +1355,8 @@ reported as dropouts or failovers. About 1.2 MB per 1,000 paths.
 - *State paths follow their restart detour.* Some plugins take minutes to
   settle (an under-keel plugin reads "off" until it has worked out its
   first clearance). Until a state path is back on the value it had before
-  the restart, for 15 minutes at most, its switches are not counted and a
+  the restart, for 15 minutes at most (its source's learned detour, once
+  known), its switches are not counted and a
   value first seen then waits. Back on it, nothing on the way was news; not
   back by then, it is one change (and a new state, if the value is new). A
   restart during a detour keeps the value from before the first.
@@ -1279,11 +1367,48 @@ reported as dropouts or failovers. About 1.2 MB per 1,000 paths.
 - *Paths are reacquired.* A path that has not read again since the
   restart (a Bluetooth plugin may take minutes to hear its sensors again,
   sending "no value" meanwhile) is not reported as a dropout until it has,
-  or for 15 minutes. So a feed that is dead when the server starts is
+  or for 15 minutes - its source's learned time, once known, so a dead
+  sensor on a source that is back within seconds is reported within minutes.
+  A source's time is the one its restarts exceed only once in a hundred,
+  fitted to its last 8 as the habits are (log-normal, its scatter shrunk
+  toward a prior while there are few), between 1 and 60 minutes: one that
+  is always back in ten seconds gets a minute, one that takes anything from
+  20 seconds to 5 minutes gets over 13. Each restart is one observation per
+  source, its slowest path's; a path heard only after the longest window (a
+  connection unplugged for a day), or one that reports only now and then,
+  is not one.
+  Until it is learned, a feed that is dead when the server starts is
   reported up to 15 minutes later than one that dies while running.
 - *"No value" keeps its start.* A sensor sending `null` when the plugin
   stopped is still said to have had no value since then; its dropout still
   counts from the restart.
+
+## Measuring it on your own data
+
+Two scripts measure the watch on a boat's real data, which is how every
+change to the detectors should be judged:
+
+- `node scripts/record-stream.mjs <out.ndjson> [ws://host:3000]` records a
+  Signal K server's stream - a line per delta with the time it arrived, and
+  the server's restarts - for as long as it runs.
+- `node scripts/evaluate-recording.mjs <recording.ndjson> [--state watch-state.json]`
+  injects known faults into the recording (steps, drifts, frozen senders,
+  dropouts, each on a path whose own data can show it; `--faults`, `--seed`,
+  `--size`), replays it through the engine as the plugin feeds it, with an
+  engine restart wherever the server restarted, and reports which faults
+  were found and how fast, and every other finding per hour. `--lib` picks
+  the version to measure and `--fault-lib` the one whose exclusions choose
+  the fault paths, so two versions can be compared on exactly the same
+  faults; for a missed fault it says what the watch made of the path
+  halfway through it.
+
+On 8.6 hours of a moored boat's data with 13 real restarts, over six sets
+of 24 faults of 8 spreads: dropouts 36/36 found, frozen senders 30/36,
+steps 30/36, drifts 32/36 (26/36 before departures were measured by how
+far a path's average strays), 128/144 in all, half of them within 1.7
+minutes; and 0.9 other findings an hour, all of them a real degradation of
+a radio link. A frozen sender that is missed is a slow one - a temperature,
+a signal strength - whose holds the watch has not yet seen a day of.
 
 ## Tuning
 
@@ -1327,10 +1452,16 @@ of one core. No GPU is used.
 - **Dead reckoning allows 2 kn of current.** In a stronger tidal stream, the
   dead-reckoning indicator can warn falsely. A second indicator is needed
   before anything escalates to `alert`.
-- **Operating states come from a fixed set of gates.** Engines, charger and
-  inverter modes, `navigation.state` and the sun are recognised; other regime
-  changes (a watermaker starting, say) are not, and may show as short-lived
-  findings until they have happened often enough to be a habit.
+- **Learned operating states need a few occurrences.** A watermaker or
+  generator nobody named is reported the first few times it moves other
+  paths, until the pairing is significant (about four times, for one that
+  runs every two hours). A pair once learned is kept; one learned from a
+  coincidence would keep re-learning its path after each change of its
+  driver.
+- **Slow drifts are still the hardest to catch.** The baseline follows part
+  of a drift that takes half an hour or more; one that its average's own
+  wandering covers (a path whose readings wander together) may go
+  unreported.
 - **Habits are only as good as their history.** A path that has a fault every
   few hours for days learns to expect it. The first ones are always reported,
   the report lists what is expected, and "useful" makes the watch forget.
@@ -1346,7 +1477,10 @@ of one core. No GPU is used.
 | --- | --- |
 | `lib/watch/engine.cjs` | Config, exclusions, operating states, tracker, findings, incidents, inventory, rules, export/import |
 | `lib/watch/path-monitor.cjs` | Per-path learning and the per-path checks |
-| `lib/watch/habits.cjs` | The departures each path makes and comes back from |
+| `lib/watch/habits.cjs` | The departures each path makes and comes back from, and how far is news |
+| `lib/watch/drivers.cjs` | Operating states learned from which changes other paths answer |
+| `lib/watch/restarts.cjs` | How each source comes back after a restart |
+| `scripts/record-stream.mjs`, `scripts/evaluate-recording.mjs` | Record a server's stream; measure the watch on it with injected faults |
 | `lib/watch/sun.cjs` | The sun's elevation from a position and a time |
 | `lib/watch/gnss.cjs` | GNSS integrity indicators |
 | `lib/watch/sources.cjs` | Primary source, disagreement, failover |
