@@ -1314,10 +1314,11 @@ seconds, a Bluetooth plugin after it has scanned for its sensors, an
 under-keel plugin once it has a depth. For each source, the watch keeps how
 long its paths took to be heard again (a second reading - the first may be
 the server's cached value) and how long its state paths took to come back
-from their detour, over its last 8 restarts. The windows below are half
-again the longest of those, 1 to 60 minutes; until a source has been
-through a restart, the defaults given here hold. The inventory lists them
-(`restarts`).
+from their detour, over its last 8 restarts. The windows below are fitted
+to those - the time its restarts would exceed only once in a hundred, as
+described under *Paths are reacquired* - and kept within 1 to 60 minutes;
+until a source has been through a restart, the defaults given here hold.
+The inventory lists them (`restarts`).
 
 - *Open findings carry over.* After a restart within 30 minutes of the last
   save, a finding that was open is the same finding if its condition is back
